@@ -1,5 +1,7 @@
- <div align="center">
-  <img src="assets/readme-banner.jpg" alt="СПИКЕР — локальная транскрибация и ИИ-обработка речи" width="100%">
+<div align="center">
+  <img src="assets/readme-banner.png"
+       alt="СПИКЕР — локальная транскрибация и ИИ-обработка речи"
+       width="100%">
   <p><a href="README_EN.md">English version</a></p>
 </div>
 
