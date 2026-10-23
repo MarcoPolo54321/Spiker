@@ -1,70 +1,83 @@
 @echo off
+chcp 65001 >nul
 setlocal EnableExtensions
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 cd /d "%~dp0"
-if not exist "logs" mkdir "logs"
-echo [%date% %time%] Launcher started>>"logs\launcher.log"
+title СПИКЕР — запуск
 
-where py >nul 2>nul
-if errorlevel 1 goto no_python
-py -3.11 --version >nul 2>nul
-if errorlevel 1 goto no_python
+REM Reset Qt overrides sometimes inherited from another activated Python/Qt environment.
+set "QT_PLUGIN_PATH="
+set "QT_QPA_PLATFORM_PLUGIN_PATH="
+set "QT_QPA_FONTDIR="
+set "QT_QPA_PLATFORM="
+set "QT_SCALE_FACTOR="
+set "QT_SCREEN_SCALE_FACTORS="
 
-if not exist ".venv311\Scripts\python.exe" goto create_env
-goto check_pip
+REM Prefer the established Python 3.11 environment. Do not create a parallel .venv
+REM if this project already uses .venv311.
+if exist ".venv311\Scripts\python.exe" (
+  set "SPK_PYTHON=%CD%\.venv311\Scripts\python.exe"
+  goto :environment_ready
+)
+if exist ".venv\Scripts\python.exe" (
+  set "SPK_PYTHON=%CD%\.venv\Scripts\python.exe"
+  goto :environment_ready
+)
 
-:create_env
-echo First run: creating Python 3.11 environment...
-py -3.11 -m venv ".venv311" >>"logs\install.log" 2>&1
-if errorlevel 1 goto install_error
+echo Не найдено виртуальное окружение СПИКЕР. Создаю .venv311 на Python 3.11...
+where py >nul 2>&1
+if not errorlevel 1 (
+  py -3.11 -m venv ".venv311"
+) else (
+  where python >nul 2>&1
+  if errorlevel 1 goto :python_missing
+  python -m venv ".venv311"
+)
+if errorlevel 1 goto :failed
+if not exist ".venv311\Scripts\python.exe" goto :failed
+set "SPK_PYTHON=%CD%\.venv311\Scripts\python.exe"
 
-:check_pip
-".venv311\Scripts\python.exe" -m pip --version >nul 2>nul
+:environment_ready
+"%SPK_PYTHON%" -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 2)"
 if errorlevel 1 (
-  ".venv311\Scripts\python.exe" -m ensurepip --upgrade >>"logs\install.log" 2>&1
-  if errorlevel 1 goto recreate_env
+  echo Ошибка: СПИКЕР требует Python 3.11 x64. Найденный интерпретатор: %SPK_PYTHON%
+  echo Если у вас уже настроено окружение .venv311, проверьте его файл Scripts\python.exe.
+  pause
+  exit /b 2
 )
 
-rem Check only distribution metadata on the fast path; never import Qt/Whisper at launch preflight.
-if exist ".venv311\deps-installed.ok" (
-  ".venv311\Scripts\python.exe" -c "import importlib.metadata as m; [m.version(x) for x in ['PySide6','vosk','pywhispercpp','PyAudio','imageio-ffmpeg','keyring','python-docx']]" >nul 2>nul
-  if not errorlevel 1 goto launch_gui
-  del ".venv311\deps-installed.ok" >nul 2>nul
+REM Validate imports rather than relying on a stale marker file.
+"%SPK_PYTHON%" -c "import PySide6, pyaudio, vosk, imageio_ffmpeg, pywhispercpp, docx" >nul 2>&1
+if errorlevel 1 goto :install_dependencies
+goto :launch
+
+:install_dependencies
+echo Не хватает зависимостей. Устанавливаю пакеты СПИКЕР...
+"%SPK_PYTHON%" -m pip install --upgrade pip
+if errorlevel 1 goto :failed
+"%SPK_PYTHON%" -m pip install -r "res\requirements.txt"
+if errorlevel 1 goto :failed
+
+:launch
+if not exist "logs" mkdir "logs"
+echo Запускаю СПИКЕР через: %SPK_PYTHON%
+echo [%date% %time%] Python: %SPK_PYTHON%>>"logs\launcher.log"
+"%SPK_PYTHON%" "scripts\safe_main.py"
+set "APP_EXIT=%ERRORLEVEL%"
+if not "%APP_EXIT%"=="0" (
+  echo Приложение завершилось с кодом %APP_EXIT%.
+  echo Проверьте logs\errors.log, logs\application.log и logs\launcher.log.
+  pause
 )
+endlocal & exit /b %APP_EXIT%
 
-echo Installing or repairing required packages. Details: logs\install.log
-".venv311\Scripts\python.exe" -m pip install --disable-pip-version-check -r "res\requirements.txt" >>"logs\install.log" 2>&1
-if errorlevel 1 goto install_error
-".venv311\Scripts\python.exe" -c "import importlib.metadata as m; [m.version(x) for x in ['PySide6','vosk','pywhispercpp','PyAudio','imageio-ffmpeg','keyring','python-docx']]" >nul 2>nul
-if errorlevel 1 goto install_error
-echo installed>".venv311\deps-installed.ok"
-
-:launch_gui
-if not exist ".venv311\Scripts\pythonw.exe" goto no_pythonw
-echo [%date% %time%] Starting GUI via pythonw + safe startup logger>>"logs\launcher.log"
-start "" ".venv311\Scripts\pythonw.exe" "scripts\safe_main.py"
-exit /b 0
-
-:recreate_env
-echo pip is not recoverable. Recreating Python environment; previous one is kept as .venv311.old.
-if exist ".venv311.old" rmdir /s /q ".venv311.old"
-if exist ".venv311" move ".venv311" ".venv311.old" >>"logs\install.log" 2>&1
-py -3.11 -m venv ".venv311" >>"logs\install.log" 2>&1
-if errorlevel 1 goto install_error
-".venv311\Scripts\python.exe" -m ensurepip --upgrade >>"logs\install.log" 2>&1
-if errorlevel 1 goto install_error
-goto check_pip
-
-:no_python
-echo Python 3.11 x64 was not found. Install Python 3.11 and run this file again.
+:python_missing
+echo Python не найден. Установите Python 3.11 x64 или восстановите папку .venv311.
 pause
-exit /b 10
+exit /b 1
 
-:no_pythonw
-echo pythonw.exe was not found in .venv311. Check the virtual environment.
-pause
-exit /b 11
-
-:install_error
-echo Setup failed. Read logs\install.log for details.
+:failed
+echo Не удалось подготовить окружение. Проверьте подключение к интернету и сообщение выше.
 pause
 exit /b 1
