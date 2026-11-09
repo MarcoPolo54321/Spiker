@@ -1,0 +1,32 @@
+{
+  "jdk": {
+    "version": "17.0.21+9",
+    "url": "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.21%2B9/OpenJDK17U-jdk_x64_windows_hotspot_17.0.21_9.zip",
+    "sha256": "98518ecf554465057ee5509462631deeee374bc368c12a411d225cd29381f84b"
+  },
+  "gradle": {
+    "version": "8.9",
+    "url": "https://services.gradle.org/distributions/gradle-8.9-bin.zip",
+    "sha256": "d725d707bfabd4dfdc958c624003b3c80accc03f7037b5122c4b1d0ef15cecab"
+  },
+  "android_commandline_tools": {
+    "version": "11076708",
+    "url": "https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip",
+    "sha256": "4d6931209eebb1bfb7c7e8b240a6a3cb3ab24479ea294f3539429574b1eec862"
+  },
+  "android_platform": {
+    "version": "35_r02",
+    "url": "https://dl.google.com/android/repository/platform-35_r02.zip",
+    "sha256": "0988cacad01b38a18a47bac14a0695f246bc76c1b06c0eeb8eb0dc825ab0c8e0"
+  },
+  "android_build_tools": {
+    "version": "35.0.0",
+    "url": "https://dl.google.com/android/repository/build-tools_r35_windows.zip",
+    "sha256": "5753c679a1b90bcf6fbc9945a2ce39dfb9e74f1df0831a1e1866ae5b594326f0"
+  },
+  "android_platform_tools": {
+    "version": "37.0.2",
+    "url": "https://dl.google.com/android/repository/platform-tools_r37.0.2-win.zip",
+    "sha256": "6d93a5e63bc1654b70b7b94bec5c6ab46db113df0265beb314055dd253772b58"
+  }
+}

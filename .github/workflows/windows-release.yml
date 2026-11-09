@@ -1,0 +1,99 @@
+name: Windows build and release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 150
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: 'x64'
+          cache: pip
+          cache-dependency-path: |
+            res/requirements.txt
+            res/requirements-build.txt
+            res/requirements-test.txt
+
+      - name: Cache pinned Whisper Small model
+        uses: actions/cache@v4
+        with:
+          path: models/whisper
+          key: spiker-whisper-small-1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b
+
+      - name: Cache Russian T-one streaming model
+        uses: actions/cache@v4
+        with:
+          path: models/sherpa-onnx
+          key: spiker-t-one-russian-streaming-2025-09-08
+
+      - name: Cache pinned faster-whisper Small model
+        uses: actions/cache@v4
+        with:
+          path: models/faster-whisper
+          key: spiker-faster-whisper-small-3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671
+
+      - name: Cache Russian Vosk Small model
+        uses: actions/cache@v4
+        with:
+          path: models/vosk
+          key: spiker-vosk-small-ru-0.22
+
+      - name: Cache offline Russian voices and diarization models
+        uses: actions/cache@v4
+        with:
+          path: |
+            models/tts
+            models/diarization
+            runtime/llama
+            .cache/model-downloads
+          key: spiker-russian-voices-diarization-sherpa-1.13.8
+
+      - name: Install Inno Setup 6
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build full offline app and installer
+        shell: pwsh
+        run: .\build_windows.ps1 -Installer -Clean -WithFasterWhisper -WithFasterWhisperModel -WithVoskModel -WithLiveDictation
+
+      - name: Build compact app and installer
+        shell: pwsh
+        run: .\build_windows.ps1 -Installer -Profile Basic -WithLiveDictation
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Spiker-Windows-${{ github.ref_name }}
+          path: |
+            dist/Spiker-Portable-*.zip
+            dist/Spiker-Setup-*.exe
+            dist/Spiker-Models-*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release assets for version tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: СПИКЕР ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/Spiker-Portable-*.zip
+            dist/Spiker-Setup-*.exe
+            dist/Spiker-Models-*.zip
+            dist/SHA256SUMS.txt

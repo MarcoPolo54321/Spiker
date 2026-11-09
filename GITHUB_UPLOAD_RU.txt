@@ -1,0 +1,38 @@
+Подготовить и загрузить исходный код СПИКЕР 3.1.0 на GitHub
+
+В этой папке находятся исходный код, документация, тесты и файлы GitHub Actions.
+Готовые Windows-установщики формируются отдельно в `dist/` и публикуются в GitHub
+Release. Сборщик скачивает и проверяет модели по контрольным суммам; тяжёлые веса
+моделей и пользовательские записи в исходный репозиторий не включаются.
+
+1. Создайте на GitHub пустой репозиторий без README и лицензии.
+2. Откройте PowerShell в корне этой папки и проверьте состав:
+
+   ```powershell
+   git status --short --ignored
+   ```
+
+   Не добавляйте `.venv*`, `.build-venv*`, `build/`, `dist/`, `data/`, `results/`,
+   `logs/`, пользовательские аудио/видео, токены или файлы весов моделей.
+3. Выполните команды, подставив адрес своего репозитория вместо `OWNER`:
+
+   ```powershell
+   git init
+   git add .
+   git status
+   git commit -m "Prepare Spiker 3.1.0 source"
+   git branch -M main
+   git remote add origin https://github.com/OWNER/Spiker.git
+   git push -u origin main
+   ```
+
+4. После загрузки откройте вкладку **Actions**. Windows workflow соберёт полный
+   и компактный Setup/Portable ZIP. Для создания GitHub Release добавьте тег:
+
+   ```powershell
+   git tag v3.1.0
+   git push origin v3.1.0
+   ```
+
+Подробная процедура описана в `docs/PUBLISHING.md`. Не загружайте `dist/` в
+обычную ветку исходников: установщики и архивы размещаются как Release assets.

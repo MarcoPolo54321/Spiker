@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="glass" x1="91" y1="74" x2="428" y2="438" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#39E8FF"/><stop offset=".52" stop-color="#1685FF"/><stop offset="1" stop-color="#B62CFF"/>
+    </linearGradient>
+    <linearGradient id="stroke" x1="77" y1="103" x2="426" y2="429" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#9BFFFF"/><stop offset=".5" stop-color="#35AFFF"/><stop offset="1" stop-color="#F17BFF"/>
+    </linearGradient>
+    <filter id="glow" x="26" y="18" width="464" height="480" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="10" result="blur"/><feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+  <g filter="url(#glow)" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M102 75h174l81 81v265H102a28 28 0 0 1-28-28V103a28 28 0 0 1 28-28Z" stroke="url(#stroke)" stroke-width="12"/>
+    <path d="M275 78v57a22 22 0 0 0 22 22h57" stroke="url(#stroke)" stroke-width="10"/>
+    <path d="M126 190h125M126 236h113M126 282h80" stroke="url(#glass)" stroke-width="18"/>
+    <path d="M126 332h108" stroke="url(#glass)" stroke-width="14"/>
+    <path d="M227 334c35 0 38-55 69-55 29 0 31 55 61 55" stroke="url(#glass)" stroke-width="13"/>
+    <rect x="344" y="212" width="72" height="146" rx="36" stroke="url(#stroke)" stroke-width="12"/>
+    <path d="M333 359c0 39 21 60 47 60s47-21 47-60M380 419v30m-39 0h78" stroke="url(#stroke)" stroke-width="11"/>
+    <path d="M436 249c18 17 18 53 0 70m19-92c31 30 31 84 0 114" stroke="url(#glass)" stroke-width="10"/>
+    <path d="M287 413v-17m18 34v-43m18 26v-17" stroke="url(#glass)" stroke-width="8"/>
+  </g>
+</svg>

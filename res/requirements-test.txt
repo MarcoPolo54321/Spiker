@@ -1,0 +1,2 @@
+# Dependencies required by the release regression suite (not bundled into the app).
+Pillow>=11,<13

@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "sha256": {
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2": "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488",
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx": "5ef208a9da1453335308a6b6f4e6dfbd7e183a38b604de0a57664f45d257fe94",
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-ru_RU-irina-medium.tar.bz2": "1fc0f54e5e084fe287c07909f2f6e0ba6d857864cf800e3ab80286a4e8233008",
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-ru_RU-ruslan-medium.tar.bz2": "0690b1cad01f86e8db9ba988af24898bdc1af774e23cb2e46b9c730269b6fd83",
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/1-two-speakers-en.wav": "f1c877dc01595e28be7147bf2fe38e5268147a868bf3fdb5c37b97f5940e21f3",
+    "https://huggingface.co/Systran/faster-whisper-medium/resolve/main/config.json": "3622a2ddc41ec0e0fd4e68c13c6830f03b90c38d89aaad184de02c8c642cf807",
+    "https://huggingface.co/Systran/faster-whisper-medium/resolve/main/model.bin": "9b45e1009dcc4ab601eff815b61d80e60ce3fd8c74c1a14f4a282258286b51ae",
+    "https://huggingface.co/Systran/faster-whisper-medium/resolve/main/tokenizer.json": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab",
+    "https://huggingface.co/Systran/faster-whisper-medium/resolve/main/vocabulary.txt": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913",
+    "https://huggingface.co/Systran/faster-whisper-small/resolve/2ec96c5472da50d38d40c0cfe0602af2e94b4c8a/config.json": "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828",
+    "https://huggingface.co/Systran/faster-whisper-small/resolve/2ec96c5472da50d38d40c0cfe0602af2e94b4c8a/model.bin": "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671",
+    "https://huggingface.co/Systran/faster-whisper-small/resolve/2ec96c5472da50d38d40c0cfe0602af2e94b4c8a/tokenizer.json": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab",
+    "https://huggingface.co/Systran/faster-whisper-small/resolve/2ec96c5472da50d38d40c0cfe0602af2e94b4c8a/vocabulary.txt": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913",
+    "https://huggingface.co/ai-sage/GigaChat3.1-10B-A1.8B-GGUF/resolve/main/GigaChat3.1-10B-A1.8B-q4_K_M.gguf": "68a8732fb5cee04f83ebffd7924e15c534d4442c5a43d2ba9e2041fe310b8deb",
+    "https://huggingface.co/ai-sage/GigaChat3.1-10B-A1.8B-GGUF/raw/main/README.md": "3692ad51d65a6ba71acc7fff22b7edc8748d4442fd3bfc40fd7a1ab39aabea52",
+    "https://github.com/ggml-org/llama.cpp/releases/download/b12211/llama-b12211-bin-win-cpu-x64.zip": "23729000408c6968faf5e322afc99319d3b8c576ba872ef7663d9b89810090f3",
+    "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.21%2B9/OpenJDK17U-jdk_x64_windows_hotspot_17.0.21_9.zip": "98518ecf554465057ee5509462631deeee374bc368c12a411d225cd29381f84b",
+    "https://services.gradle.org/distributions/gradle-8.9-bin.zip": "d725d707bfabd4dfdc958c624003b3c80accc03f7037b5122c4b1d0ef15cecab",
+    "https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip": "4d6931209eebb1bfb7c7e8b240a6a3cb3ab24479ea294f3539429574b1eec862",
+    "https://dl.google.com/android/repository/platform-35_r02.zip": "0988cacad01b38a18a47bac14a0695f246bc76c1b06c0eeb8eb0dc825ab0c8e0",
+    "https://dl.google.com/android/repository/build-tools_r35_windows.zip": "5753c679a1b90bcf6fbc9945a2ce39dfb9e74f1df0831a1e1866ae5b594326f0",
+    "https://dl.google.com/android/repository/platform-tools_r37.0.2-win.zip": "6d93a5e63bc1654b70b7b94bec5c6ab46db113df0265beb314055dd253772b58",
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar": "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96",
+    "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/sherpa-onnx/kotlin-api/FeatureConfig.kt": "829c7adc4db1324f21b9a9cbf5bf10eacf759714fe50956f48317c1ffef044f6",
+    "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/sherpa-onnx/kotlin-api/HomophoneReplacerConfig.kt": "fe926b6413f4d87e67c41feb21b8363923a67cbd3a5eb687b76390a5f1f7db60",
+    "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/sherpa-onnx/kotlin-api/OfflineRecognizer.kt": "85054fa9722913bce96c94c5c7eaaa7fd99606b79fbfbeac6cfb60040eae2164",
+    "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/sherpa-onnx/kotlin-api/OfflineSpeakerDiarization.kt": "4017f3b1359f6c3f35a0c46ed4e939d2578fe7773c8686c786bd6a591e4b8921",
+    "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/sherpa-onnx/kotlin-api/OfflineStream.kt": "5c90b7c060cdd0a2222cc935b54f69465a4a7544de29240bafe4d3a8d86dbb6e",
+    "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/sherpa-onnx/kotlin-api/OnlineRecognizer.kt": "0955f2bc42af42f04d4836ee3b6981663636d8b7d1f7fc70c9040505d32841e4",
+    "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/sherpa-onnx/kotlin-api/OnlineStream.kt": "6b9f8de317e6a0bb51f0f29d940617b781cb31b190e1c725dd438231836c06ab",
+    "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/sherpa-onnx/kotlin-api/QnnConfig.kt": "86c963f27677f690eb0d6639735052eba5e60d9f81ccd4c1df0aa831fd680d6f",
+    "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/sherpa-onnx/kotlin-api/SpeakerEmbeddingExtractorConfig.kt": "d90c0ce88dce309813e720ff46abba737401e7e562f9635ee13fd5b32ce106c6",
+    "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/sherpa-onnx/kotlin-api/Tts.kt": "1a2a19e247553f774c5abdfda8319ce9e1a44e21279b16dc2c63e963a82ea9b1"
+  },
+  "model_files": {
+    "t_one": {
+      "0.wav": "980b4327e684725859e437f05d15dfa4ec8afb994ef2e8fb356365af76547c41",
+      "LICENSE": "c8e6ecb86af681d9815d1ada7b1a7780ea5e5cb68a5df94fc800adab1a6ce027",
+      "model.onnx": "5ded080e2a6c86ecc11bcb0902d77524eb3e8b0844cb0c0754347f5aafb4dabc",
+      "README.md": "13da1cf18473853706b9b512ec32d572a1a70a264b18bf31cb8391564b22c433",
+      "tokens.txt": "27f7b3ba2096c572375fba1a6b29af1f80d86e08a329940612908112695f97e0"
+    },
+    "vosk": {
+      "am/final.mdl": "36d67b53dc90d96ea48097f9e17e7c5937689ad76cb8bed25091317bbaf25919",
+      "conf/mfcc.conf": "1e2228006d01d805ad1c267fee9f79709ca87ac51bd82b0e3f5c69ba543f0fc4",
+      "conf/model.conf": "dd7178da0e99fdbe489816c1e9702c3daa28e02accacc2993e0becb7af33b80c",
+      "graph/disambig_tid.int": "c3af3dbc5eb301c4b282480d785c04b1642a8db83210a12332e9790e50146fd2",
+      "graph/Gr.fst": "189b4f67c69eb34b9d8b47b12f184665e5445667ca5264579b61c6b9eb2cef1e",
+      "graph/HCLr.fst": "0b096f4676f306aa3e60d2244ef1e24c5c699b8794acf3c3946b59bcc9dca831",
+      "graph/phones/word_boundary.int": "23081404fe1cc7338c013a4beec133637147d60472c06ab64ff88ee3d028a7b5",
+      "ivector/final.dubm": "7dffe22bd992d7274fba925632bded4756d82dfd9b962d3c703110251fdf35b8",
+      "ivector/final.ie": "94f2558d00fe199ac01409281352eb16707ec075baaf9cc0d7b53011583cfa0e",
+      "ivector/final.mat": "956577d396b636fe359b4321f10df5ed6a76bdfdec366b4a2b7d3242e524f04f",
+      "ivector/global_cmvn.stats": "c600cbf4acfbfac99d587040d48dc31129cd635b112ff15bfa2e9d3b0cece1f8",
+      "ivector/online_cmvn.conf": "a2f3571754b64297cb7efb2e7ca3df61995c5a45fcbb97188f90613552bb2dfe",
+      "ivector/splice.conf": "9f0c5f7c82d18eaf25d8bce470efa9f7741f88411fe428774bc0a9bb69a24756",
+      "README": "b662517cacda14945e159538d6dd8faff23bd706e024c4fb338b6013c9939b9e"
+    }
+  }
+}

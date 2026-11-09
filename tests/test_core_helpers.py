@@ -1,0 +1,221 @@
+import json
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import ai_provider
+from app_config import load_settings, save_settings
+from subtitle_export import format_timestamp, render_subtitles
+from app_paths import _copy_missing_files, get_app_root, get_user_data_root
+
+
+class AppPathTests(unittest.TestCase):
+    def setUp(self):
+        get_user_data_root.cache_clear()
+
+    def tearDown(self):
+        get_user_data_root.cache_clear()
+
+    def test_source_mode_root_is_project_directory(self):
+        self.assertEqual(get_app_root(), ROOT.resolve())
+
+    def test_frozen_mode_root_is_executable_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            expected = Path(tmp) / "InstalledSpiker"
+            expected.mkdir()
+            executable = expected / "Spiker.exe"
+            with patch.object(sys, "frozen", True, create=True), patch.object(sys, "executable", str(executable)):
+                self.assertEqual(get_app_root(), expected.resolve())
+
+    def test_portable_mode_migrates_existing_data_without_overwriting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "portable.flag").write_text("portable", encoding="ascii")
+            old_settings = root / "data" / "settings.json"
+            old_settings.parent.mkdir(parents=True)
+            old_settings.write_text('{"language":"ru"}', encoding="utf-8")
+            keep = root / "results" / "keep.txt"
+            keep.parent.mkdir()
+            keep.write_text("old", encoding="utf-8")
+            new_keep = root / "Documents/Spiker/results/keep.txt"
+            new_keep.parent.mkdir(parents=True)
+            new_keep.write_text("new", encoding="utf-8")
+
+            with patch('app_paths.documents_folder', return_value=root / 'Documents'), patch.dict(os.environ, {'LOCALAPPDATA': str(root / 'Local'), 'SPIKER_DATA_DIR': ''}):
+                data_root = get_user_data_root(root)
+
+            self.assertEqual(data_root.resolve(), (root / "Documents/Spiker").resolve())
+            self.assertEqual((data_root / "data" / "settings.json").read_text(encoding="utf-8"), '{"language":"ru"}')
+            self.assertEqual((data_root / "results" / "keep.txt").read_text(encoding="utf-8"), "new")
+
+    def test_user_data_migration_skips_rebuildable_caches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            source = base / "legacy"
+            destination = base / "user"
+            (source / "data" / "waveform_cache").mkdir(parents=True)
+            (source / "data" / "waveform_cache" / "sample.cache").write_text("cache", encoding="utf-8")
+            (source / "data" / "settings.json").write_text("{}", encoding="utf-8")
+
+            _copy_missing_files(source, destination)
+
+            self.assertTrue((destination / "data" / "settings.json").is_file())
+            self.assertFalse((destination / "data" / "waveform_cache").exists())
+
+    def test_installed_mode_uses_documents_and_migrates_legacy_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            install = base / "Programs" / "Spiker"
+            old_logs = install / "logs" / "application.log"
+            old_logs.parent.mkdir(parents=True)
+            old_logs.write_text("legacy log", encoding="utf-8")
+            local = base / "LocalAppData"
+            with patch.object(sys, "frozen", True, create=True), patch.dict(os.environ, {"LOCALAPPDATA": str(local), "SPIKER_DATA_DIR": ""}), patch("app_paths.documents_folder", return_value=base / "Documents"):
+                data_root = get_user_data_root(install)
+
+            self.assertEqual(data_root, base / "Documents/Spiker")
+            self.assertEqual((data_root / "logs" / "application.log").read_text(encoding="utf-8"), "legacy log")
+
+    def test_frozen_app_can_discover_optional_runtime_in_user_data(self):
+        from runtime_paths import extend_optional_runtime_paths
+        previous_path = list(sys.path)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                app = base / "Programs" / "Spiker"
+                local = base / "LocalAppData"
+                optional = local / "Spiker" / ".venv-models" / "Lib" / "site-packages"
+                optional.mkdir(parents=True)
+                with patch.object(sys, "frozen", True, create=True), patch.dict(os.environ, {"LOCALAPPDATA": str(local), "SPIKER_DATA_DIR": ""}), patch("app_paths.documents_folder", return_value=base / "Documents"):
+                    added = extend_optional_runtime_paths(app)
+                self.assertTrue(any(os.path.samefile(optional, path) for path in added))
+                self.assertTrue(any(os.path.samefile(optional, path) for path in sys.path if Path(path).exists()))
+        finally:
+            sys.path[:] = previous_path
+
+
+class SplitTextTests(unittest.TestCase):
+    def test_short_text_stays_one_chunk(self):
+        self.assertEqual(ai_provider.split_text("Тест. Второе предложение."), ["Тест. Второе предложение."])
+
+    def test_long_text_preserves_exact_content(self):
+        text = ("Абзац один. Это длинная строка с русскими буквами и цифрами 123.\n\n" * 80).strip()
+        chunks = ai_provider.split_text(text, 117)
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual("".join(chunks), text)
+        self.assertTrue(all(chunks))
+
+    def test_empty_text(self):
+        self.assertEqual(ai_provider.split_text(""), [])
+
+
+class SubtitleTests(unittest.TestCase):
+    def test_timestamp_format(self):
+        self.assertEqual(format_timestamp(3723.456), "01:02:03,456")
+        self.assertEqual(format_timestamp(2.5, True), "00:00:02.500")
+
+    def test_srt_uses_sorted_real_timestamps(self):
+        text = render_subtitles([
+            {"start": 2.0, "end": 3.25, "text": "Вторая фраза"},
+            {"start": 0.0, "end": 1.2, "text": "Первая фраза"},
+        ])
+        self.assertIn("1\n00:00:00,000 --> 00:00:01,200", text)
+        self.assertIn("2\n00:00:02,000 --> 00:00:03,250", text)
+        self.assertLess(text.index("Первая фраза"), text.index("Вторая фраза"))
+
+    def test_vtt_header(self):
+        text = render_subtitles([{"start": 0, "end": 0.8, "text": "Привет"}], vtt=True)
+        self.assertTrue(text.startswith("WEBVTT\n\n"))
+        self.assertIn("00:00:00.000 --> 00:00:00.800", text)
+
+    def test_no_segments_returns_empty(self):
+        self.assertEqual(render_subtitles([]), "")
+
+
+class SettingsTests(unittest.TestCase):
+    def test_ai_settings_persist_but_api_secret_is_not_written(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"SPIKER_DATA_DIR": tmp}):
+            root = Path(tmp)
+            save_settings(root, {
+                "threads": 3, "language": "ru", "ai_provider": "api",
+                "ai_api_base_url": "https://api.example.test/v1", "ai_api_model": "example-model",
+                "ai_api_key": "do-not-write-this",
+            })
+            loaded = load_settings(root)
+            self.assertEqual(loaded["ai_provider"], "api")
+            self.assertEqual(loaded["ai_api_base_url"], "https://api.example.test/v1")
+            persisted = (root / "data" / "settings.json").read_text(encoding="utf-8")
+            self.assertNotIn("do-not-write-this", persisted)
+            self.assertNotIn('"ai_api_key"', persisted)
+
+
+class AIPipelineTests(unittest.TestCase):
+    @patch("ai_provider.chat_completion", return_value="Краткое содержание")
+    def test_short_summary_uses_provider_and_returns_text(self, mock_chat):
+        progress = []
+        output = ai_provider.process_transcript(
+            "local", "http://127.0.0.1:11434/v1", "qwen3.5:4b", "", "summary", "Текст исходной записи.",
+            progress=lambda percent, msg: progress.append((percent, msg)),
+        )
+        self.assertEqual(output, "Краткое содержание")
+        self.assertEqual(mock_chat.call_count, 1)
+        self.assertEqual(progress[-1][0], 100)
+
+    @patch("ai_provider.chat_completion", return_value="Фрагмент обработан")
+    def test_long_text_summarizes_chunks_then_synthesizes(self, mock_chat):
+        output = ai_provider.process_transcript(
+            "local", "http://127.0.0.1:11434/v1", "qwen3.5:4b", "", "summary", ("Длинный текст. " * 1500),
+        )
+        self.assertEqual(output, "Фрагмент обработан")
+        self.assertGreater(mock_chat.call_count, 2)
+
+    @patch("ai_provider.chat_completion", return_value="Сводка фрагмента")
+    def test_very_long_text_is_reduced_hierarchically(self, mock_chat):
+        text = ("Очень длинный текст записи с несколькими фактами. " * 5000)
+        output = ai_provider.process_transcript(
+            "local", "http://127.0.0.1:11434/v1", "qwen3.5:4b", "", "summary", text,
+        )
+        self.assertEqual(output, "Сводка фрагмента")
+        self.assertGreater(mock_chat.call_count, 10)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+
+
+class ModelPathMigrationTests(unittest.TestCase):
+    def test_legacy_vosk_folder_moves_into_models_tree(self):
+        from model_paths import resolve_vosk_model_path
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"SPIKER_DATA_DIR": tmp}):
+            root = Path(tmp)
+            legacy = root / "model" / "vosk-model-small-ru-0.22"
+            legacy.mkdir(parents=True)
+            marker = legacy / "am" / "final.mdl"
+            marker.parent.mkdir(parents=True)
+            marker.write_bytes(b"marker")
+            resolved = resolve_vosk_model_path(root)
+            self.assertEqual(resolved, (root / "models" / "vosk" / "vosk-model-small-ru-0.22").resolve())
+            self.assertTrue((resolved / "am" / "final.mdl").is_file())
+            self.assertFalse(legacy.exists())
+            self.assertFalse((root / "model").exists())
+
+    def test_legacy_folder_keeps_other_content(self):
+        from model_paths import resolve_vosk_model_path
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"SPIKER_DATA_DIR": tmp}):
+            root = Path(tmp)
+            legacy_root = root / "model"
+            legacy = legacy_root / "vosk-model-small-ru-0.22"
+            legacy.mkdir(parents=True)
+            (legacy / "model.marker").write_text("keep", encoding="utf-8")
+            other = legacy_root / "unrelated.txt"
+            other.write_text("keep", encoding="utf-8")
+            resolved = resolve_vosk_model_path(root)
+            self.assertTrue((resolved / "model.marker").is_file())
+            self.assertTrue(other.is_file())
+            self.assertTrue(legacy_root.exists())

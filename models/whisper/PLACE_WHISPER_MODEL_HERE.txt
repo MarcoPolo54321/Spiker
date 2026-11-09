@@ -1,0 +1,1 @@
+Place local Whisper model files such as ggml-small.bin or ggml-medium.bin in this folder. Open СПИКЕР > Settings > Refresh to discover them. Models are not downloaded automatically.
