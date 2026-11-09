@@ -15,6 +15,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# Python helpers print localized diagnostics. Force UTF-8 so hosted Windows
+# runners with a legacy OEM code page do not fail while encoding Russian text.
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
 Remove-Item Env:SPIKER_DATA_DIR -ErrorAction SilentlyContinue
