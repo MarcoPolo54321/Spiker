@@ -562,8 +562,10 @@ class Ui_MainWindow(object):
         self.pushButton_about_prog.setToolTip("Справка: информация о приложении и моделях распознавания")
 
     def update_responsive_icons(self, window_width: int, window_height: int = 900):
-        compact = window_width < 1000 or window_height < 820
-        dense = window_height < 800
+        # A 900 px high Windows work area is already tight for two card rows;
+        # switch to the dense dashboard before Qt's layouts start clipping them.
+        compact = window_width < 1000 or window_height < 980
+        dense = window_height < 920
         icon_width = max(48, min(92 if compact else 106, int(window_width * (0.07 if compact else 0.085))))
         horizontal = 14 if compact else 30
         vertical = 8 if dense else (12 if compact else 24)
