@@ -410,12 +410,19 @@ if (Test-Path $PortableZip) { Remove-Item $PortableZip -Force }
 # Keep model weights out of both the installer executable and portable app ZIP.
 # The companion archive is distributed beside Setup.exe and unpacked by Setup.
 $ModelStage = Join-Path $Dist '.model-package-stage'
+$MediumModelStage = Join-Path $Dist '.medium-model-package-stage'
 $ModelArchive = Join-Path $Dist "Spiker-Models-$Version$ArtifactSuffix.zip"
+$MediumModelArchive = Join-Path $Dist "Spiker-Models-Medium-$Version$ArtifactSuffix.zip"
 if (Test-Path $ModelStage) { Remove-Item -LiteralPath $ModelStage -Recurse -Force }
+if (Test-Path $MediumModelStage) { Remove-Item -LiteralPath $MediumModelStage -Recurse -Force }
 if (Test-Path $ModelArchive) { Remove-Item -LiteralPath $ModelArchive -Force }
+if (Test-Path $MediumModelArchive) { Remove-Item -LiteralPath $MediumModelArchive -Force }
 $ModelRelatives = @('models\whisper\ggml-small.bin', 'models\whisper\MODEL_SOURCE.md')
+$MediumModelRelatives = @()
 if ($WithFasterWhisperModel) { $ModelRelatives += 'models\faster-whisper\small' }
-if ($WithFasterWhisperModel -and (Test-Path (Join-Path $Root 'models\faster-whisper\medium'))) { $ModelRelatives += 'models\faster-whisper\medium' }
+if ($WithFasterWhisperModel -and (Test-Path (Join-Path $Root 'models\faster-whisper\medium'))) {
+    $MediumModelRelatives += 'models\faster-whisper\medium'
+}
 if ($WithVoskModel) { $ModelRelatives += 'models\vosk\vosk-model-small-ru-0.22' }
 if ($WithLiveDictation) {
     $ModelRelatives += 'models\sherpa-onnx\sherpa-onnx-streaming-t-one-russian-2025-09-08'
@@ -433,11 +440,28 @@ foreach ($Relative in $ModelRelatives) {
         Copy-Item -LiteralPath $SourceModel -Destination $StagePath -Force
     }
 }
+foreach ($Relative in $MediumModelRelatives) {
+    $SourceModel = Join-Path $AppDir $Relative
+    if (-not (Test-Path -LiteralPath $SourceModel)) { continue }
+    $StagePath = Join-Path $MediumModelStage $Relative
+    New-Item -ItemType Directory -Path (Split-Path -Parent $StagePath) -Force | Out-Null
+    Copy-Item -LiteralPath $SourceModel -Destination $StagePath -Recurse -Force
+}
 if (Test-Path -LiteralPath $ModelStage) {
     Compress-Archive -Path (Join-Path $ModelStage '*') -DestinationPath $ModelArchive -CompressionLevel Optimal
     Remove-Item -LiteralPath $ModelStage -Recurse -Force
 }
+if (Test-Path -LiteralPath $MediumModelStage) {
+    Compress-Archive -Path (Join-Path $MediumModelStage '*') -DestinationPath $MediumModelArchive -CompressionLevel Optimal
+    Remove-Item -LiteralPath $MediumModelStage -Recurse -Force
+}
 foreach ($Relative in $ModelRelatives) {
+    $BundledModel = Join-Path $AppDir $Relative
+    if (Test-Path -LiteralPath $BundledModel) {
+        Remove-Item -LiteralPath $BundledModel -Recurse -Force
+    }
+}
+foreach ($Relative in $MediumModelRelatives) {
     $BundledModel = Join-Path $AppDir $Relative
     if (Test-Path -LiteralPath $BundledModel) {
         Remove-Item -LiteralPath $BundledModel -Recurse -Force

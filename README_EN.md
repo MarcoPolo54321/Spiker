@@ -95,7 +95,7 @@ Settings include CPU/RAM/NVIDIA/CUDA diagnostics and a suggested profile, with m
 ## Installation
 
 1. Open the repository's **Releases** page.
-2. Download the Setup and matching `Spiker-Models-<version>.zip`; both files have the `-Basic` suffix for the compact profile. Keep them in the same folder.
+2. Download the Setup and matching model archives. Full uses `Spiker-Models-<version>.zip` plus `Spiker-Models-Medium-<version>.zip`; Basic uses one `Spiker-Models-<version>-Basic.zip`. Keep the files together.
 3. Run Setup. It automatically unpacks the models. Python, Qt, and the application's runtime libraries are bundled.
 4. For Portable, also download the matching model ZIP and place it beside the extracted `Spiker` folder. The app unpacks the models on first launch. The gated pyannote Community-1 model remains separate and requires accepting its Hugging Face terms.
 

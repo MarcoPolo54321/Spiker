@@ -199,7 +199,7 @@ class ReleaseAssetTests(unittest.TestCase):
         guide = ROOT / "GITHUB_UPLOAD_RU.txt"
         self.assertTrue(guide.is_file())
         install_guide = (ROOT / "INSTALL_WINDOWS_RU.txt").read_text(encoding="utf-8")
-        self.assertIn("Spiker-Portable-3.1.3-Basic.zip", install_guide)
+        self.assertIn("Spiker-Models-3.1.3-Basic.zip", install_guide)
         publishing = (ROOT / "docs" / "PUBLISHING.md").read_text(encoding="utf-8")
         self.assertIn("Spiker-Setup-3.1.3-Basic.exe", publishing)
         self.assertIn("Spiker-Portable-3.1.3-Basic.zip", publishing)

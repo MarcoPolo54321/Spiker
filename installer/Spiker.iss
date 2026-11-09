@@ -58,6 +58,11 @@ begin
   Result := AddBackslash(ExpandConstant('{src}')) + 'Spiker-Models-{#AppVersion}{#AppFlavor}.zip';
 end;
 
+function MediumModelArchivePath: String;
+begin
+  Result := AddBackslash(ExpandConstant('{src}')) + 'Spiker-Models-Medium-{#AppVersion}{#AppFlavor}.zip';
+end;
+
 function InitializeSetup(): Boolean;
 begin
   Result := True;
@@ -79,6 +84,12 @@ begin
       ModelArchivePath + ''' -DestinationPath ''' + ExpandConstant('{app}') + ''' -Force"';
     if not Exec(PowerShellPath, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
       RaiseException('Не удалось разложить модели. Убедитесь, что рядом с установщиком находится архив Spiker-Models и на диске достаточно места.');
+    if FileExists(MediumModelArchivePath) then begin
+      Params := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath ''' +
+        MediumModelArchivePath + ''' -DestinationPath ''' + ExpandConstant('{app}') + ''' -Force"';
+      if not Exec(PowerShellPath, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+        RaiseException('Не удалось разложить архив Whisper Medium. Проверьте архив моделей и свободное место.');
+    end;
   end;
 end;
 

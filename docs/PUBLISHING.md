@@ -45,8 +45,8 @@ git push origin v3.1.3
 
 Workflow соберёт и приложит к GitHub Release:
 
-- `Spiker-Setup-3.1.3.exe` и `Spiker-Models-3.1.3.zip` — стандартная установка; оба файла нужны рядом, установщик автоматически раскладывает модели;
-- `Spiker-Portable-3.1.3.zip` и `Spiker-Models-3.1.3.zip` — переносная версия; приложение раскладывает соседний архив при первом запуске;
+- `Spiker-Setup-3.1.3.exe`, `Spiker-Models-3.1.3.zip` и `Spiker-Models-Medium-3.1.3.zip` — стандартная установка; установщик автоматически раскладывает оба архива;
+- `Spiker-Portable-3.1.3.zip` и оба архива моделей — переносная версия; приложение раскладывает их при первом запуске;
 - соответствующие `Spiker-Setup-3.1.3-Basic.exe`, `Spiker-Portable-3.1.3-Basic.zip` и `Spiker-Models-3.1.3-Basic.zip` — компактная сборка;
 - `SHA256SUMS.txt` — контрольные суммы.
 

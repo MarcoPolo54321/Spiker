@@ -3,10 +3,11 @@
 ## Что создаёт сборка
 
 - `dist/Spiker/Spiker.exe` и каталоги DLL/ресурсов — Windows onedir-приложение.
-- `dist/Spiker-Portable-3.0.8.zip` — переносной пакет приложения без весов моделей.
-- `dist/Spiker-Setup-3.0.8.exe` — пользовательский установщик Inno Setup без встроенных весов моделей.
-- `dist/Spiker-Models-3.0.8.zip` — соответствующий архив моделей. Для установки Setup.exe и ZIP должны лежать рядом; установщик сам разложит модели.
-- `dist/Spiker-Portable-3.0.8-Basic.zip` и `dist/Spiker-Setup-3.0.8-Basic.exe` — компактная версия с Whisper Small и без дополнительных движков, вместе с `Spiker-Models-3.0.8-Basic.zip`.
+- `dist/Spiker-Portable-<версия>.zip` — переносной пакет приложения без весов моделей.
+- `dist/Spiker-Setup-<версия>.exe` — пользовательский установщик Inno Setup без встроенных весов моделей.
+- `dist/Spiker-Models-<версия>.zip` — базовые модели и дополнительные движки.
+- `dist/Spiker-Models-Medium-<версия>.zip` — faster-whisper Medium отдельно, чтобы каждый файл помещался в лимит GitHub Releases. Setup/Portable автоматически устанавливают оба соседних архива.
+- `dist/Spiker-Portable-<версия>-Basic.zip` и `dist/Spiker-Setup-<версия>-Basic.exe` — компактная версия с Whisper Small и без дополнительных движков, вместе с `Spiker-Models-<версия>-Basic.zip`.
 - `dist/SHA256SUMS.txt` — контрольные суммы релизных файлов.
 - Установщик и portable ZIP также содержат `INSTALL_WINDOWS_RU.txt` и один необязательный `Install_Speaker_Diarization.bat`.
 
@@ -14,8 +15,8 @@
 
 - приложение, PySide6/Qt, FFmpeg и базовые зависимости;
 - модель Whisper.cpp Small (`ggml-small.bin`, около 488 МБ), загружаемую с закреплённой ревизии и проверяемую по SHA-256;
-- в отдельном ZIP — модели Whisper, а в полном профиле также выбранные faster-whisper, Vosk, T-one и TTS веса;
-- Setup извлекает ZIP в папку программы. Portable сборка при первом запуске автоматически раскладывает соседний архив `Spiker-Models-*.zip`.
+- в архивах моделей — Whisper, faster-whisper Small/Medium, Vosk, T-one и TTS веса;
+- Setup извлекает базовый и Medium ZIP в папку программы. Portable сборка при первом запуске автоматически раскладывает все соседние архивы `Spiker-Models-*.zip`.
 
 Компактный профиль (суффикс `-Basic`) включает приложение, FFmpeg и Whisper.cpp Small.
 Он уменьшает состав пакета; faster-whisper, потоковая диктовка и Vosk доступны как
@@ -36,7 +37,7 @@
 1. Распакуйте исходный архив полностью в рабочую папку.
 2. Установите Python 3.11 x64.
 3. Дважды щёлкните `Build_Spiker_Windows_Installer.bat`.
-4. Сборщик проверит Python, обнаружит или предложит установить Inno Setup 6, создаст `.build-venv`, установит build dependencies, скачает/проверит модели, запустит проверки, соберёт PyInstaller onedir, выполнит smoke-test, затем вынесет веса в отдельный `Spiker-Models-<версия>.zip` и создаст Setup/Portable без них.
+4. Сборщик проверит Python, обнаружит или предложит установить Inno Setup 6, создаст `.build-venv`, установит build dependencies, скачает/проверит модели, запустит проверки, соберёт PyInstaller onedir, выполнит smoke-test, затем вынесет веса в `Spiker-Models-<версия>.zip` и `Spiker-Models-Medium-<версия>.zip` и создаст Setup/Portable без них.
 5. После сообщения об успешной сборке откроется `dist/`.
 
 Для компактного Setup и portable ZIP запустите `Build_Spiker_Windows_Basic.bat`.
@@ -56,7 +57,7 @@
 
 ## PowerShell-команды
 
-Полный офлайн-релизный набор (приложение и отдельный ZIP с Whisper.cpp + faster-whisper + T-one + Vosk + Setup.exe):
+Полный офлайн-релизный набор (приложение, базовый ZIP и отдельный ZIP с faster-whisper Medium + Setup.exe):
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -99,11 +100,11 @@ Developer-only сборка без встроенной Whisper Small (не дл
 
 `.github/workflows/windows-release.yml` запускается вручную через Actions или автоматически при push-теге `v*`. Workflow выполняется на Windows runner и собирает оба профиля: полный офлайн-набор и компактный Basic. В Actions загружаются оба Setup, оба Portable ZIP и SHA-256; при version tag те же файлы прикладываются к GitHub Release.
 
-Для `VERSION=3.0.8` используйте тег:
+Для релиза с версией из `VERSION` используйте тег вида:
 
 ```powershell
-git tag v3.0.8
-git push origin v3.0.8
+git tag v<версия>
+git push origin v<версия>
 ```
 
 ## Дополнительные компоненты после установки
