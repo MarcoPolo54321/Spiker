@@ -43,6 +43,27 @@ QPushButton[role="primary"]:hover { background: qlineargradient(x1:0,y1:0,x2:1,y
 QPushButton[role="navigation"] { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #245FC7, stop:0.52 #267EDB, stop:1 #36A9E8); color: #FFFFFF; border: 1px solid rgba(134,222,255,205); border-bottom: 2px solid #49C9F4; }
 QPushButton[role="navigation"]:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #3477DF, stop:0.52 #3196ED, stop:1 #62D8FF); border-color: rgba(218,250,255,240); }
 QPushButton[role="navigation"]:pressed { background: #174B9B; border-bottom-width: 1px; }
+QPushButton#pushButton_record_audio, QPushButton#pushButton_choose_file,
+QPushButton#pushButton_ai_card, QPushButton#pushButton_speech {
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #1478E7, stop:0.55 #1596F5, stop:1 #27C0F1);
+    color: #FFFFFF;
+    border: 1px solid #75E8FF;
+    border-bottom: 3px solid #35D0F3;
+    border-radius: 11px;
+    padding: 7px 14px;
+    font-weight: 700;
+    text-align: center;
+}
+QPushButton#pushButton_record_audio:hover, QPushButton#pushButton_choose_file:hover,
+QPushButton#pushButton_ai_card:hover, QPushButton#pushButton_speech:hover {
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #268BF5, stop:0.55 #24B4FF, stop:1 #63DFFF);
+    border-color: #C5F9FF;
+}
+QPushButton#pushButton_record_audio:pressed, QPushButton#pushButton_choose_file:pressed,
+QPushButton#pushButton_ai_card:pressed, QPushButton#pushButton_speech:pressed {
+    background: #0D579F;
+    border-bottom-width: 1px;
+}
 QPushButton[role="secondary"] { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 rgba(18,101,232,210), stop:0.55 rgba(8,91,211,230), stop:1 rgba(11,47,131,235)); border: 1px solid rgba(114,232,255,155); }
 QPushButton[role="secondary"]:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 rgba(35,119,242,225), stop:0.55 rgba(13,115,236,240), stop:1 rgba(22,98,188,245)); }
 QPushButton[role="tertiary"] { color: #D5E9FF; background: rgba(8, 38, 97, 116); border: 1px solid rgba(114,232,255,70); border-radius: 12px; }

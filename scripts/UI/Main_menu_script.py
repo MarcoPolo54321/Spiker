@@ -210,14 +210,14 @@ class IconGlass(QWidget):
 
     def __init__(self, image_path, parent=None):
         super().__init__(parent)
-        self._target_width = 96
+        self._target_width = 112
         self.setFixedSize(self._target_width, int(self._target_width * 0.84))
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._svg = QSvgRenderer(str(image_path)) if str(image_path).lower().endswith(".svg") else None
         self._pixmap = QPixmap(str(image_path)) if self._svg is None else QPixmap()
 
     def set_responsive_width(self, width):
-        width = max(78, min(128, int(width)))
+        width = max(88, min(160, int(width)))
         if width != self._target_width:
             self._target_width = width
             self.setFixedSize(width, int(width * 0.84))
@@ -240,6 +240,60 @@ class IconGlass(QWidget):
             y = (self.height() - pixmap.height()) // 2
             painter.drawPixmap(x, y, pixmap)
         painter.end()
+
+
+def _create_feature_card(eyebrow_text, image_path, title_text, description_text,
+                         hint_text, button_text, button_name, tooltip=None):
+    """Create a compact two-column action card with an obvious primary button."""
+    card = LiquidGlassCard()
+    card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+    outer = QHBoxLayout(card)
+    outer.setContentsMargins(18, 16, 18, 16)
+    outer.setSpacing(16)
+
+    media_panel = QWidget(card)
+    media_panel.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    media = QVBoxLayout(media_panel)
+    media.setContentsMargins(0, 0, 0, 0)
+    media.setSpacing(8)
+    eyebrow = QLabel(eyebrow_text)
+    eyebrow.setObjectName("cardEyebrow")
+    eyebrow.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    icon = IconGlass(image_path, media_panel)
+    media.addWidget(eyebrow)
+    media.addWidget(icon, 0, Qt.AlignmentFlag.AlignCenter)
+    media.addStretch(1)
+    outer.addWidget(media_panel, 0)
+
+    content_panel = QWidget(card)
+    content_panel.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    content = QVBoxLayout(content_panel)
+    content.setContentsMargins(0, 0, 0, 0)
+    content.setSpacing(6)
+    title = QLabel(title_text)
+    title.setObjectName("compactCardTitle")
+    title.setWordWrap(True)
+    description = QLabel(description_text)
+    description.setObjectName("cardDescription")
+    description.setWordWrap(True)
+    description.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    hint = QLabel(hint_text)
+    hint.setObjectName("formatLabel")
+    hint.setWordWrap(True)
+    button = QPushButton(button_text)
+    button.setObjectName(button_name)
+    button.setProperty("role", "navigation")
+    button.setMinimumHeight(38)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    if tooltip:
+        button.setToolTip(tooltip)
+    content.addWidget(title)
+    content.addWidget(description)
+    content.addWidget(hint)
+    content.addStretch(1)
+    content.addWidget(button)
+    outer.addWidget(content_panel, 1)
+    return card, outer, media_panel, icon, title, description, hint, button
 
 
 class Ui_MainWindow(object):
@@ -305,8 +359,7 @@ class Ui_MainWindow(object):
         header.addLayout(brand_text)
         header.addStretch(1)
 
-        # Utility controls are stacked at the upper-right: local processing badge first,
-        # then a compact row of settings/help/training shortcuts immediately below.
+        # Utility controls stay together; the waveform aligns to the three-icon row.
         utility_column = QVBoxLayout()
         utility_column.setSpacing(7)
         self.label_local_badge = QLabel("ОБРАБОТКА НА УСТРОЙСТВЕ")
@@ -347,6 +400,9 @@ class Ui_MainWindow(object):
         self.pushButton_user_guide.setCursor(Qt.CursorShape.PointingHandCursor)
         utility_buttons.addWidget(self.pushButton_user_guide)
         utility_column.addLayout(utility_buttons)
+        self.voice_waveform = NeonVoiceWaveform()
+        self.voice_waveform.setFixedWidth(154)
+        utility_column.addWidget(self.voice_waveform, 0, Qt.AlignmentFlag.AlignRight)
         header.addLayout(utility_column)
         root.addLayout(header)
 
@@ -358,8 +414,6 @@ class Ui_MainWindow(object):
         hero.setSpacing(18)
         self.hero_layout = hero
         hero.addWidget(self.label_easy_fast_slogan, 1)
-        self.voice_waveform = NeonVoiceWaveform()
-        hero.addWidget(self.voice_waveform, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         root.addLayout(hero)
         self.label_every_audio_to_text = QLabel("Диктуйте, расшифровывайте аудио и обрабатывайте результат с помощью ИИ.")
         self.label_every_audio_to_text.setObjectName("pageSubtitle")
@@ -381,159 +435,48 @@ class Ui_MainWindow(object):
         cards.setRowStretch(0, 1)
         cards.setRowStretch(1, 1)
 
-        # Card 1: Dictation, preserved functional objectName for existing signal connection.
-        self.dictation_card = LiquidGlassCard()
-        self.dictation_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        dict_layout = QVBoxLayout(self.dictation_card)
-        self.dictation_card_layout = dict_layout
-        dict_layout.setContentsMargins(20, 18, 20, 18)
-        dict_layout.setSpacing(10)
-        dict_eyebrow = QLabel("01  /  МИКРОФОН")
-        dict_eyebrow.setObjectName("cardEyebrow")
-        dict_eyebrow.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        dict_layout.addWidget(dict_eyebrow)
-        dict_icon = IconGlass(ICON_ROOT / "dict_text_monitor_round.png")
-        self.dictation_icon = dict_icon
-        dict_layout.addWidget(dict_icon, 0, Qt.AlignmentFlag.AlignLeft)
-        self.label_dictation_card_title = QLabel("Диктовать")
-        self.label_dictation_card_title.setObjectName("compactCardTitle")
-        self.label_dictation_card_title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        dict_layout.addWidget(self.label_dictation_card_title)
-        self.label_dictation_card_description = QLabel(
-            "Говорите в микрофон — текст появляется по мере распознавания. "
-            "Подходит для заметок, идей и диктовки."
-        )
-        self.label_dictation_card_description.setObjectName("cardDescription")
-        self.label_dictation_card_description.setWordWrap(True)
-        self.label_dictation_card_description.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        dict_layout.addWidget(self.label_dictation_card_description)
-        dict_layout.addStretch(1)
-        self.label_dictation_hint = QLabel("МИКРОФОН · ТЕКСТ ПО МЕРЕ РЕЧИ")
-        self.label_dictation_hint.setObjectName("formatLabel")
-        self.label_dictation_hint.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        dict_layout.addWidget(self.label_dictation_hint)
-        self.pushButton_record_audio = QPushButton("Диктовать")
-        self.pushButton_record_audio.setObjectName("pushButton_record_audio")
-        self.pushButton_record_audio.setProperty("role", "primary")
-        self.pushButton_record_audio.setProperty("role", "navigation")
-        self.pushButton_record_audio.setMinimumHeight(36)
-        self.pushButton_record_audio.setCursor(Qt.CursorShape.PointingHandCursor)
-        dict_layout.addWidget(self.pushButton_record_audio)
+        self.dictation_card, self.dictation_card_layout, self.dictation_media_panel, \
+            self.dictation_icon, self.label_dictation_card_title, self.label_dictation_card_description, \
+            self.label_dictation_hint, self.pushButton_record_audio = _create_feature_card(
+                "01  /  МИКРОФОН", ICON_ROOT / "dict_text_monitor_round.png", "Диктовать",
+                "Говорите в микрофон — текст появляется по мере распознавания. "
+                "Подходит для заметок, идей и диктовки.",
+                "МИКРОФОН · ТЕКСТ ПО МЕРЕ РЕЧИ", "Диктовать", "pushButton_record_audio",
+                "Записать речь с микрофона и преобразовать её в текст",
+            )
         cards.addWidget(self.dictation_card, 0, 0)
 
-        # Card 2: File transcription, preserving its existing functional objectName.
-        self.file_card = LiquidGlassCard()
-        self.file_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        file_layout = QVBoxLayout(self.file_card)
-        self.file_card_layout = file_layout
-        file_layout.setContentsMargins(20, 18, 20, 18)
-        file_layout.setSpacing(10)
-        file_eyebrow = QLabel("02  /  ФАЙЛЫ")
-        file_eyebrow.setObjectName("cardEyebrow")
-        file_eyebrow.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        file_layout.addWidget(file_eyebrow)
-        file_icon = IconGlass(ICON_ROOT / "transcribation_round.png")
-        self.file_icon = file_icon
-        file_layout.addWidget(file_icon, 0, Qt.AlignmentFlag.AlignLeft)
-        self.label_file_card_title = QLabel("Загрузить файл")
-        self.label_file_card_title.setObjectName("compactCardTitle")
-        self.label_file_card_title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        file_layout.addWidget(self.label_file_card_title)
-        self.label_file_card_description = QLabel(
-            "Загрузите аудио или видео. Очередь помогает обрабатывать несколько файлов, "
-            "приостанавливать работу и продолжать позже."
-        )
-        self.label_file_card_description.setObjectName("cardDescription")
-        self.label_file_card_description.setWordWrap(True)
-        self.label_file_card_description.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        file_layout.addWidget(self.label_file_card_description)
-        file_layout.addStretch(1)
-        self.label_file_formats = QLabel("MP3  ·  WAV  ·  M4A  ·  MP4  ·  MOV  ·  MKV")
-        self.label_file_formats.setObjectName("formatLabel")
-        self.label_file_formats.setWordWrap(True)
-        self.label_file_formats.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        file_layout.addWidget(self.label_file_formats)
-        self.pushButton_choose_file = QPushButton("Загрузить файл")
-        self.pushButton_choose_file.setObjectName("pushButton_choose_file")
-        self.pushButton_choose_file.setProperty("role", "navigation")
-        self.pushButton_choose_file.setMinimumHeight(36)
-        self.pushButton_choose_file.setCursor(Qt.CursorShape.PointingHandCursor)
-        file_layout.addWidget(self.pushButton_choose_file)
+        self.file_card, self.file_card_layout, self.file_media_panel, self.file_icon, \
+            self.label_file_card_title, self.label_file_card_description, self.label_file_formats, \
+            self.pushButton_choose_file = _create_feature_card(
+                "02  /  ФАЙЛЫ", ICON_ROOT / "transcribation_round.png", "Загрузить файл",
+                "Загрузите аудио или видео. Очередь помогает обрабатывать несколько файлов, "
+                "приостанавливать работу и продолжать позже.",
+                "MP3 · WAV · M4A · MP4 · MOV · MKV", "Загрузить файл", "pushButton_choose_file",
+                "Выбрать аудио- или видеофайл для распознавания",
+            )
         cards.addWidget(self.file_card, 0, 1)
 
-        # Card 3: AI post-processing is a first-class workflow, not a hidden shortcut.
-        self.ai_card = LiquidGlassCard()
-        self.ai_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        ai_layout = QVBoxLayout(self.ai_card)
-        self.ai_card_layout = ai_layout
-        ai_layout.setContentsMargins(20, 18, 20, 18)
-        ai_layout.setSpacing(10)
-        ai_eyebrow = QLabel("03  /  ИНТЕЛЛЕКТ")
-        ai_eyebrow.setObjectName("cardEyebrow")
-        ai_eyebrow.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        ai_layout.addWidget(ai_eyebrow)
-        self.ai_icon = IconGlass(ICON_ROOT / "ai_processing.png")
-        ai_layout.addWidget(self.ai_icon, 0, Qt.AlignmentFlag.AlignLeft)
-        self.label_ai_card_title = QLabel("ИИ-обработка")
-        self.label_ai_card_title.setObjectName("compactCardTitle")
-        self.label_ai_card_title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        ai_layout.addWidget(self.label_ai_card_title)
-        self.label_ai_card_description = QLabel(
-            "Создайте краткое содержание, конспект или протокол. "
-            "Выбирайте локальную модель либо внешний API."
-        )
-        self.label_ai_card_description.setObjectName("cardDescription")
-        self.label_ai_card_description.setWordWrap(True)
-        self.label_ai_card_description.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        ai_layout.addWidget(self.label_ai_card_description)
-        ai_layout.addStretch(1)
-        self.label_ai_card_hint = QLabel("ОФЛАЙН-РЕЖИМ · API ПО ВЫБОРУ")
-        self.label_ai_card_hint.setObjectName("formatLabel")
-        self.label_ai_card_hint.setWordWrap(True)
-        self.label_ai_card_hint.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        ai_layout.addWidget(self.label_ai_card_hint)
-        self.pushButton_ai_card = QPushButton("Обработать текст")
-        self.pushButton_ai_card.setObjectName("pushButton_ai_card")
-        self.pushButton_ai_card.setProperty("role", "primary")
-        self.pushButton_ai_card.setProperty("role", "navigation")
-        self.pushButton_ai_card.setMinimumHeight(36)
-        self.pushButton_ai_card.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.pushButton_ai_card.setToolTip("Открыть инструменты ИИ-обработки расшифровок")
-        ai_layout.addWidget(self.pushButton_ai_card)
+        self.ai_card, self.ai_card_layout, self.ai_media_panel, self.ai_icon, \
+            self.label_ai_card_title, self.label_ai_card_description, self.label_ai_card_hint, \
+            self.pushButton_ai_card = _create_feature_card(
+                "03  /  ИНТЕЛЛЕКТ", ICON_ROOT / "ai_processing.png", "ИИ-обработка",
+                "Создайте краткое содержание, конспект или протокол. "
+                "Выбирайте локальную модель либо внешний API.",
+                "ОФЛАЙН-РЕЖИМ · API ПО ВЫБОРУ", "Обработать текст", "pushButton_ai_card",
+                "Открыть инструменты ИИ-обработки расшифровок",
+            )
         cards.addWidget(self.ai_card, 1, 0)
 
         root.addLayout(cards, 1)
-        self.speech_card = LiquidGlassCard()
-        self.speech_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        speech_layout = QVBoxLayout(self.speech_card)
-        self.speech_card_layout = speech_layout
-        speech_layout.setContentsMargins(20, 18, 20, 18)
-        speech_layout.setSpacing(10)
-        speech_eyebrow = QLabel("04  /  ОЗВУЧКА")
-        speech_eyebrow.setObjectName("cardEyebrow")
-        speech_eyebrow.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        speech_layout.addWidget(speech_eyebrow)
-        self.speech_icon = IconGlass(ICON_ROOT / "main_text_to_voice.png")
-        speech_layout.addWidget(self.speech_icon, 0, Qt.AlignmentFlag.AlignLeft)
-        speech_heading = QLabel("Озвучить текст")
-        speech_heading.setObjectName("compactCardTitle")
-        speech_layout.addWidget(speech_heading)
-        speech_description = QLabel(
-            "Превратите текст в голос, выберите диктора и сохраните готовое аудио. "
-            "Русские голоса работают без интернета."
-        )
-        speech_description.setObjectName("cardDescription")
-        speech_description.setWordWrap(True)
-        speech_layout.addWidget(speech_description)
-        speech_layout.addStretch(1)
-        self.label_speech_hint = QLabel("ТЕКСТ → WAV / MP3 · ИРИНА И РУСЛАН")
-        self.label_speech_hint.setObjectName("formatLabel")
-        self.label_speech_hint.setWordWrap(True)
-        speech_layout.addWidget(self.label_speech_hint)
-        self.pushButton_speech = QPushButton('Озвучить текст')
-        self.pushButton_speech.setProperty('role', 'navigation')
-        self.pushButton_speech.setMinimumHeight(36)
-        speech_layout.addWidget(self.pushButton_speech)
+        self.speech_card, self.speech_card_layout, self.speech_media_panel, self.speech_icon, \
+            self.label_speech_card_title, self.label_speech_card_description, self.label_speech_hint, \
+            self.pushButton_speech = _create_feature_card(
+                "04  /  ОЗВУЧКА", ICON_ROOT / "main_text_to_voice.png", "Озвучить текст",
+                "Превратите текст в голос, выберите диктора и сохраните готовое аудио. "
+                "Русские голоса работают без интернета.",
+                "ТЕКСТ → WAV / MP3 · ИРИНА И РУСЛАН", "Озвучить текст", "pushButton_speech",
+            )
         cards.addWidget(self.speech_card, 1, 1)
 
         footer = QHBoxLayout()
@@ -566,7 +509,8 @@ class Ui_MainWindow(object):
         # switch to the dense dashboard before Qt's layouts start clipping them.
         compact = window_width < 1000 or window_height < 980
         dense = window_height < 920
-        icon_width = max(48, min(92 if compact else 106, int(window_width * (0.07 if compact else 0.085))))
+        icon_width = max(112, min(146 if compact else 160, int(window_width * 0.095)))
+        media_width = max(132, min(176, icon_width + 24))
         horizontal = 14 if compact else 30
         vertical = 8 if dense else (12 if compact else 24)
         self.root_layout.setContentsMargins(horizontal, vertical, horizontal,
@@ -581,20 +525,23 @@ class Ui_MainWindow(object):
             QHBoxLayout.Direction.TopToBottom if window_width < 860 else QHBoxLayout.Direction.LeftToRight
         )
         self.hero_layout.setSpacing(4 if compact else 18)
-        self.voice_waveform.setMinimumSize(88 if dense else (118 if compact else 174), 30 if dense else (42 if compact else 50))
-        self.voice_waveform.setMinimumWidth(88 if dense else (118 if compact else 174))
+        self.voice_waveform.setFixedWidth(154)
+        self.voice_waveform.setMinimumHeight(30 if dense else (42 if compact else 50))
         self.voice_waveform.setMaximumHeight(34 if dense else (48 if compact else 56))
         self.cards_layout.setSpacing(6 if compact else 16)
         for card_layout in (self.dictation_card_layout, self.file_card_layout,
                             self.ai_card_layout, self.speech_card_layout):
-            card_layout.setContentsMargins(10 if compact else 20, 7 if dense else (10 if compact else 18),
-                                           10 if compact else 20, 7 if dense else (10 if compact else 18))
-            card_layout.setSpacing(3 if dense else (5 if compact else 10))
+            card_layout.setContentsMargins(12 if compact else 18, 10 if dense else 16,
+                                           12 if compact else 18, 10 if dense else 16)
+            card_layout.setSpacing(10 if compact else 16)
+        for media_panel in (self.dictation_media_panel, self.file_media_panel,
+                            self.ai_media_panel, self.speech_media_panel):
+            media_panel.setFixedWidth(media_width)
         for card in (self.dictation_card, self.file_card, self.ai_card, self.speech_card):
             card.setMinimumHeight(0)
         for button in (self.pushButton_record_audio, self.pushButton_choose_file,
                        self.pushButton_ai_card, self.pushButton_speech):
-            button.setMinimumHeight(30 if dense else 36)
+            button.setMinimumHeight(34 if dense else 40)
         self.dictation_icon.set_responsive_width(icon_width)
         self.file_icon.set_responsive_width(icon_width)
         self.ai_icon.set_responsive_width(icon_width)
