@@ -2,12 +2,19 @@
 """PyInstaller spec for the Windows onedir release of СПИКЕР."""
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PySide6.QtCore import QLibraryInfo
 
 ROOT = Path(SPECPATH).resolve()
 SCRIPTS = ROOT / "scripts"
 
 binaries = []
 datas = []
+# Native QMessageBox/QDialogButtonBox controls otherwise remain in English even
+# when application labels are Russian. Include only the Qt base locale file.
+qtbase_ru = Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)) / "qtbase_ru.qm"
+if not qtbase_ru.is_file():
+    raise RuntimeError("The Russian Qt base translation is missing: " + str(qtbase_ru))
+datas.append((str(qtbase_ru), "translations"))
 # Optional speaker diarization is installed in a separate Python 3.11 environment.
 # Keep the base app small while shipping its helper and one-click installer.
 datas.append((str(ROOT / "Install_Speaker_Diarization.bat"), "."))
@@ -59,6 +66,7 @@ hiddenimports = [
     "model_bundle",
     "download_t_one_model",
     "speech_synthesis", "UI.Speech_page", "transcription.onnx_diarization", "local_ai", "shutdown",
+    "app_localization",
 ]
 
 # The app's guarded launcher executes scripts/main.py from disk at runtime.

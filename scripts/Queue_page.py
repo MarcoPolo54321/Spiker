@@ -1916,6 +1916,7 @@ class QueuePage(QWidget):
         ))
 
         dialog = QDialog(self)
+        dialog.setObjectName("speakerDialog")
         dialog.setWindowTitle("Участники записи")
         dialog.resize(860, 600)
         layout = QVBoxLayout(dialog)
@@ -1928,7 +1929,10 @@ class QueuePage(QWidget):
         intro.setWordWrap(True)
         layout.addWidget(intro)
         tabs = QTabWidget(dialog)
+        tabs.setObjectName("speakerTabs")
         profile_page = QWidget()
+        profile_page.setObjectName("speakerProfilePage")
+        profile_page.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         profile_layout = QVBoxLayout(profile_page)
         profile_hint = QLabel("Основная вкладка: список найденных голосов. Измените имя прямо в таблице.")
         profile_hint.setWordWrap(True)
@@ -1991,6 +1995,8 @@ class QueuePage(QWidget):
         tabs.addTab(profile_page, "Профили участников")
 
         correction_page = QWidget()
+        correction_page.setObjectName("speakerCorrectionPage")
+        correction_page.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         correction_layout = QVBoxLayout(correction_page)
         correction_hint = QLabel(
             "Используйте эту вкладку только для спорных фрагментов, если автоматическая диаризация ошиблась. "
@@ -2098,6 +2104,12 @@ class QueuePage(QWidget):
         add_profile_button.clicked.connect(add_profile)
         merge_profile_button.clicked.connect(merge_profiles)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        if save_button:
+            save_button.setText("Сохранить")
+        if cancel_button:
+            cancel_button.setText("Отмена")
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
@@ -2436,13 +2448,17 @@ class QueuePage(QWidget):
             QMessageBox.information(self, "Задача выполняется", "Сначала остановите текущую обработку.")
             return
         if task.get("status") == "completed":
-            answer = QMessageBox.question(
-                self, "Удалить из истории?",
-                "Убрать задачу из списка? Уже сохранённый текстовый результат останется в папке results.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
+            dialog = QMessageBox(self)
+            dialog.setWindowTitle("Удалить из истории?")
+            dialog.setText(
+                "Убрать задачу из списка? Уже сохранённый текстовый результат останется в папке results."
             )
-            if answer != QMessageBox.StandardButton.Yes:
+            dialog.setIcon(QMessageBox.Icon.Question)
+            confirm_button = dialog.addButton("Да", QMessageBox.ButtonRole.YesRole)
+            cancel_button = dialog.addButton("Нет", QMessageBox.ButtonRole.NoRole)
+            dialog.setDefaultButton(cancel_button)
+            dialog.exec()
+            if dialog.clickedButton() is not confirm_button:
                 return
         if self._waveform_worker is not None and self._waveform_task_id == task.get("id"):
             self._waveform_preempted_ids.discard(task.get("id"))

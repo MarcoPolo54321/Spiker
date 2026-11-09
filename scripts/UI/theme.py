@@ -38,8 +38,9 @@ QPushButton { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #1265E8, s
 QPushButton:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #2479F3, stop:0.60 #138BFF, stop:1 #4BD7FF); border-color: rgba(222,250,255,220); }
 QPushButton:pressed { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #0849B8, stop:0.60 #075ACB, stop:1 #098EC3); padding-top: 11px; padding-bottom: 7px; }
 QPushButton:disabled { color: #839CBD; background: rgba(22, 50, 98, 150); border-color: rgba(116, 150, 192, 50); }
-QPushButton[role="primary"] { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #1265E8, stop:0.42 #087BFF, stop:1 #16BFFF); color: #FFFFFF; border: 1px solid rgba(216,249,255,205); }
-QPushButton[role="primary"]:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #297BF1, stop:0.42 #1592FF, stop:1 #72E8FF); }
+QPushButton[role="primary"] { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #39A4F5, stop:0.48 #46BDF2, stop:1 #73D9F8); color: #FFFFFF; border: 2px solid #A8F0FF; border-bottom: 3px solid #39D2F2; }
+QPushButton[role="primary"]:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #53B6FF, stop:0.48 #68D0FF, stop:1 #A0ECFF); border-color: #D7FBFF; }
+QPushButton[role="primary"]:pressed { background: #167BCB; border-bottom-width: 1px; }
 QPushButton[role="navigation"] { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #245FC7, stop:0.52 #267EDB, stop:1 #36A9E8); color: #FFFFFF; border: 1px solid rgba(134,222,255,205); border-bottom: 2px solid #49C9F4; }
 QPushButton[role="navigation"]:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #3477DF, stop:0.52 #3196ED, stop:1 #62D8FF); border-color: rgba(218,250,255,240); }
 QPushButton[role="navigation"]:pressed { background: #174B9B; border-bottom-width: 1px; }
@@ -165,6 +166,18 @@ QTabWidget#appTabs::pane { border: 1px solid rgba(157,190,222,95); background: #
 QTabWidget#appTabs QTabBar::tab { background: #0B285E; color: #C7D9F2; border: 1px solid rgba(125,169,220,80); border-bottom: none; padding: 9px 18px; margin-right: 3px; min-width: 86px; }
 QTabWidget#appTabs QTabBar::tab:selected { background: #123C7B; color: #FFFFFF; border-top: 2px solid #BDD6E2; }
 QTabWidget#appTabs QTabBar::tab:hover:!selected { background: #10336C; }
+QDialog#speakerDialog { background: #061746; }
+QTabWidget#speakerTabs::pane {
+    background: #08245A;
+    border: 1px solid rgba(114, 173, 243, 95);
+    border-radius: 10px;
+    top: -1px;
+}
+QWidget#speakerProfilePage, QWidget#speakerCorrectionPage {
+    background: #08245A;
+    color: #F5FAFF;
+}
+QLabel#speakerDialogHint { color: #C4D9FA; }
 """
 
 APP_STYLESHEET += r'''
@@ -173,16 +186,16 @@ APP_STYLESHEET += r'''
 QPushButton#pushButton_settings,
 QPushButton#pushButton_about_prog,
 QPushButton#pushButton_user_guide {
-    background: rgba(5, 22, 66, 75);
-    border: 1px solid rgba(114, 232, 255, 45);
+    background: rgba(36, 129, 203, 112);
+    border: 1px solid rgba(123, 226, 255, 165);
     border-radius: 14px;
     padding: 1px;
 }
 QPushButton#pushButton_settings:hover,
 QPushButton#pushButton_about_prog:hover,
 QPushButton#pushButton_user_guide:hover {
-    background: rgba(22, 74, 145, 88);
-    border: 1px solid rgba(185, 233, 255, 145);
+    background: rgba(73, 174, 235, 170);
+    border: 1px solid rgba(223, 250, 255, 235);
 }
 QPushButton#pushButton_settings:pressed,
 QPushButton#pushButton_about_prog:pressed,
@@ -225,6 +238,18 @@ QTabWidget#userGuideTabs QTabBar::tab:selected {
     border-top: 2px solid #72E8FF;
 }
 QTabWidget#userGuideTabs QTabBar::tab:hover:!selected { background: rgba(16, 51, 108, 190); }
+QWidget#settingsPage QPushButton {
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+        stop:0 rgba(38, 139, 225, 245), stop:0.52 rgba(48, 172, 234, 245), stop:1 rgba(87, 208, 246, 245));
+    color: #FFFFFF;
+    border: 1px solid #9AEAFF;
+    border-bottom: 2px solid #42D3F2;
+    border-radius: 11px;
+    font-weight: 700;
+}
+QWidget#settingsPage QPushButton:hover { background: #55BDF6; border-color: #D9FBFF; }
+QWidget#settingsPage QPushButton:pressed { background: #176EB7; border-bottom-width: 1px; }
+QWidget#settingsPage QPushButton:disabled { color: #A4BAD3; background: #19365F; border-color: #456387; }
 QFrame#userGuideContentPanel {
     background: rgba(8, 38, 97, 168);
     border: 1px solid rgba(114, 232, 255, 58);

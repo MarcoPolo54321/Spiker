@@ -15,6 +15,7 @@ class ReleaseAssetTests(unittest.TestCase):
             "assets/screenshots/dictation.png",
             "assets/screenshots/ai-processing.png",
             "assets/screenshots/help.png",
+            "assets/screenshots/settings.png",
         ):
             self.assertTrue((ROOT / relative).is_file(), relative)
             self.assertIn(relative, readme)
@@ -116,7 +117,7 @@ class ReleaseAssetTests(unittest.TestCase):
 
     def test_version_info_is_current(self):
         version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
-        self.assertEqual(version, "3.1.3")
+        self.assertEqual(version, "3.1.4")
         self.assertIn(f'#define AppVersion "{version}"', (ROOT / "installer" / "Spiker.iss").read_text(encoding="utf-8"))
         build = (ROOT / "build_windows.ps1").read_text(encoding="utf-8")
         self.assertIn("if ($VersionParts.Count -eq 3) { $VersionParts += '0' }", build)
@@ -196,13 +197,14 @@ class ReleaseAssetTests(unittest.TestCase):
         self.assertIn('optional_excludes.extend(("faster_whisper", "ctranslate2"))', spec)
 
     def test_github_upload_guide_and_two_profiles_are_documented(self):
+        version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
         guide = ROOT / "GITHUB_UPLOAD_RU.txt"
         self.assertTrue(guide.is_file())
         install_guide = (ROOT / "INSTALL_WINDOWS_RU.txt").read_text(encoding="utf-8")
-        self.assertIn("Spiker-Models-3.1.3-Basic.zip", install_guide)
+        self.assertIn(f"Spiker-Models-{version}-Basic.zip", install_guide)
         publishing = (ROOT / "docs" / "PUBLISHING.md").read_text(encoding="utf-8")
-        self.assertIn("Spiker-Setup-3.1.3-Basic.exe", publishing)
-        self.assertIn("Spiker-Portable-3.1.3-Basic.zip", publishing)
+        self.assertIn(f"Spiker-Setup-{version}-Basic.exe", publishing)
+        self.assertIn(f"Spiker-Portable-{version}-Basic.zip", publishing)
 
     def test_gitignore_excludes_runtime_caches_and_model_weights(self):
         ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")

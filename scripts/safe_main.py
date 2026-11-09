@@ -135,6 +135,9 @@ def _packaging_smoke_test() -> None:
     # Native audio modules should load successfully even when no model or microphone is installed.
     _ = (pyaudio, vosk, pywhispercpp.model)
     app = QApplication.instance() or QApplication([])
+    from app_localization import install_russian_qt_translations
+    if install_russian_qt_translations(app) is None:
+        raise FileNotFoundError("Russian Qt translations (qtbase_ru.qm) are missing from the release package.")
     media_player = QMediaPlayer()
     audio_output = QAudioOutput()
     media_player.setAudioOutput(audio_output)
@@ -171,6 +174,8 @@ except Exception as exc:
     try:
         from PySide6.QtWidgets import QApplication, QMessageBox
         app = QApplication.instance() or QApplication([])
+        from app_localization import install_russian_qt_translations
+        install_russian_qt_translations(app)
         QMessageBox.critical(None, "Ошибка запуска СПИКЕР", message)
     except Exception:
         pass

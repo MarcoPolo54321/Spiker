@@ -2,7 +2,7 @@
 
 ## Description field (copy into the repository's About → Description)
 
-СПИКЕР 3.1.3 — Windows-приложение для офлайн-диктовки и транскрибации аудио/видео, точного выбора числа спикеров, русской озвучки и локального ИИ. Whisper Small/Medium, адаптивный интерфейс, Setup и Portable.
+СПИКЕР 3.1.4 — Windows-приложение для офлайн-диктовки и транскрибации аудио/видео, локального GigaChat, точного выбора числа спикеров и русской озвучки. Whisper Small/Medium, адаптивный интерфейс, Setup и Portable.
 
 ## Suggested topics
 

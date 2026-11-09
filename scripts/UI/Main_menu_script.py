@@ -282,7 +282,7 @@ def _create_feature_card(eyebrow_text, image_path, title_text, description_text,
     hint.setWordWrap(True)
     button = QPushButton(button_text)
     button.setObjectName(button_name)
-    button.setProperty("role", "navigation")
+    button.setProperty("role", "primary")
     button.setMinimumHeight(38)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     if tooltip:

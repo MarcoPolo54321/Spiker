@@ -340,10 +340,11 @@ class OptionalBackendTests(unittest.TestCase):
         self.assertEqual([item["speaker_id"] for item in segments], ["Спикер 1", "Спикер 2"])
         self.assertEqual(set(stats) - {"_meta"}, {"Спикер 1", "Спикер 2"})
 
+    @patch("transcription.hardware_diagnostics._memory_available_gb", return_value=8.0)
     @patch("transcription.hardware_diagnostics._memory_gb", return_value=16.0)
     @patch("transcription.hardware_diagnostics._nvidia_info", return_value=("NVIDIA Test", 8.0))
     @patch("transcription.hardware_diagnostics.cuda_backend_ready", return_value=True)
-    def test_diagnostics_recommend_gpu_profile_from_hardware(self, _cuda, _gpu, _ram):
+    def test_diagnostics_recommend_gpu_profile_from_hardware(self, _cuda, _gpu, _ram, _available_ram):
         report = diagnose_hardware()
         self.assertEqual(report.recommended_device, "cuda")
         self.assertEqual(report.recommended_compute_type, "float16")

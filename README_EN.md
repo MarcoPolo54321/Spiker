@@ -20,7 +20,13 @@ SPIKER brings several workflows together: capture an idea, transcribe a long rec
 
 **Less busywork — more time for what matters.**
 
-### 3.1.3 — compact dashboard and navigation refresh
+### 3.1.4 — GigaChat context handling and button contrast
+
+- Bundled GigaChat now processes long transcripts in small context-aware chunks and uses a bounded output budget for its 4096-token runtime.
+- Main actions and Settings buttons have brighter light-blue fills and visible cyan borders.
+- Updated Windows installer and refreshed repository screenshots.
+
+### 3.1.3 — compact dashboard
 
 - The home dashboard compacts at shorter window heights and starts sized to the available desktop area, removing its vertical scrollbar.
 - Main navigation buttons use a brighter blue-cyan shade for stronger contrast.
@@ -91,6 +97,10 @@ Settings include CPU/RAM/NVIDIA/CUDA diagnostics and a suggested profile, with m
 ### Help and model compatibility
 
 ![Help screen](assets/screenshots/help.png)
+
+### Settings
+
+![Settings and model selection](assets/screenshots/settings.png)
 
 ## Installation
 

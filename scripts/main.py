@@ -1778,6 +1778,8 @@ def _fit_main_window_to_available_screen(app, window):
 # --------------------------------------------- ЗАПУСК ПРИЛОЖЕНИЯ ------------------------------------------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    from app_localization import install_russian_qt_translations
+    install_russian_qt_translations(app)
     app.setApplicationName("СПИКЕР")
     app.setStyleSheet(APP_STYLESHEET)
     # Windows taskbar identity/icon must be set before creating the top-level window.
