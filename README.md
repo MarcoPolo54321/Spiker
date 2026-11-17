@@ -1,4 +1,4 @@
-# СПИКЕР 3.1.4 Refresh — диктовка, расшифровка и озвучка
+# СПИКЕР 3.1.5 — диктовка, расшифровка и озвучка
 
 ![СПИКЕР](assets/readme-banner.jpg)
 
@@ -8,7 +8,7 @@
 
 ## Установка
 
-1. Для Windows 10/11 x64 скачайте [установщик EXE](https://github.com/MarcoPolo54321/Spiker/releases/download/v3.1.4-refresh/Spiker-Setup-3.1.4-Windows.exe) и [архив распознавания](https://github.com/MarcoPolo54321/Spiker/releases/download/v3.1.4-refresh/Spiker-Models-3.1.4-Windows.zip).
+1. Для Windows 10/11 x64 скачайте [установщик СПИКЕР 3.1.5](https://github.com/MarcoPolo54321/Spiker/releases/tag/v3.1.5) и [совместимый архив моделей распознавания](https://github.com/MarcoPolo54321/Spiker/releases/download/v3.1.4-refresh/Spiker-Models-3.1.4-Windows.zip).
 2. Положите оба файла рядом. Запустите установщик. Он проверит архив и распакует модели; вручную распаковывать ZIP не нужно.
 3. Откройте «СПИКЕР» из меню «Пуск». При необходимости добавьте [модели голосов, участников или локального ИИ](#дополнительные-модели).
 
@@ -48,3 +48,5 @@
 [История изменений](RELEASE_NOTES.md) · [Сборка Windows](docs/BUILD_WINDOWS.md) · [Публикация](docs/PUBLISHING.md) · [Android: отдельные исходники](docs/ANDROID_BUILD_RU.md)
 
 [Архитектура и дорожная карта](docs/ARCHITECTURE_AND_ROADMAP_3.1.0.md). У предыдущих выпусков установщики могли называться `Spiker-Setup-<версия>.exe`; для Refresh используйте пару файлов из раздела «Установка».
+
+**Своя Ollama или LM Studio в локальной сети:** в «ИИ-обработке» укажите LAN-адрес и порт сервера и нажмите «Проверить подключение». Для Ollama на соседнем ПК нужно включить доступ из LAN и открыть порт в брандмауэре. [Пошаговая настройка](docs/LOCAL_AI_LAN_RU.md).

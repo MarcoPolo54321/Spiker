@@ -1,7 +1,8 @@
 # -*- coding: utf-8
 """Provider adapters for local Ollama and OpenAI-compatible chat APIs.
 
-All network access is opt-in from the AI page. The local provider defaults to localhost.
+All network access is opt-in from the AI page. The local provider can use localhost
+or a keyless service in a private LAN.
 """
 from __future__ import annotations
 
@@ -102,21 +103,38 @@ def _normal_base(url: str) -> str:
 
 
 def _validate_credential_transport(url: str, api_key: str) -> None:
-    """Ensure even unauthenticated external inference uses encrypted transport."""
+    """Keep credentials encrypted; allow keyless HTTP to a private LAN model."""
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None:
         raise ValueError("Укажите адрес ИИ-сервера HTTP/HTTPS без учётных данных в адресе.")
     if parsed.scheme.lower() == "https":
         return
     host = (parsed.hostname or "").lower().rstrip(".")
-    if host == "localhost":
+    if _is_local_host(host):
+        if api_key.strip():
+            raise ValueError("HTTP в локальной сети не шифрует API-ключ. Уберите ключ или настройте HTTPS на сервере.")
         return
+    raise ValueError("Для внешнего сервера используйте HTTPS. HTTP разрешён только для сервера на этом ПК или в частной локальной сети.")
+
+
+def _is_local_host(host: str) -> bool:
+    host = (host or "").lower().rstrip(".")
+    if host == "localhost" or host.endswith(".local") or (host and "." not in host and ":" not in host):
+        return True
     try:
-        if ipaddress.ip_address(host).is_loopback:
-            return
+        address = ipaddress.ip_address(host)
     except ValueError:
-        pass
-    raise ValueError("Используйте HTTPS для внешнего сервера. HTTP допускается только для локального сервера на этом ПК.")
+        return False
+    if address.is_loopback or address.is_link_local:
+        return True
+    if address.version == 4:
+        private_networks = (
+            ipaddress.ip_network("10.0.0.0/8"),
+            ipaddress.ip_network("172.16.0.0/12"),
+            ipaddress.ip_network("192.168.0.0/16"),
+        )
+        return any(address in network for network in private_networks)
+    return address in ipaddress.ip_network("fc00::/7")
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -133,7 +151,7 @@ def _request_json_blocking(url: str, payload: dict | None = None, headers: dict 
         request_headers.setdefault("Content-Type", "application/json; charset=utf-8")
     request = urllib.request.Request(url, data=body, headers=request_headers, method="POST" if body is not None else "GET")
     try:
-        local = urllib.parse.urlsplit(url).hostname in {'127.0.0.1', 'localhost', '::1'}
+        local = _is_local_host(urllib.parse.urlsplit(url).hostname or "")
         if control is None:
             opener = urllib.request.build_opener(_NoRedirect(), *([urllib.request.ProxyHandler({})] if local else []))
         else:

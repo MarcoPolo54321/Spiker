@@ -1,9 +1,15 @@
 #pragma codepage "UTF-8"
 #ifndef AppVersion
-  #define AppVersion "3.1.4"
+  #define AppVersion "3.1.5"
 #endif
 #ifndef AppFlavor
   #define AppFlavor ""
+#endif
+#ifndef BundleFlavor
+  #define BundleFlavor AppFlavor
+#endif
+#ifndef BundleVersion
+  #define BundleVersion AppVersion
 #endif
 #ifndef AppFolder
   #define AppFolder "Spiker"
@@ -88,7 +94,7 @@ Filename: "{app}\{#AppExeName}"; Description: "Запустить СПИКЕР";
 [Code]
 function BundlePath(Kind: String): String;
 begin
-  Result := AddBackslash(ExpandConstant('{src}')) + 'Spiker-Models' + Kind + '-{#AppVersion}{#AppFlavor}.zip';
+  Result := AddBackslash(ExpandConstant('{src}')) + 'Spiker-Models' + Kind + '-{#BundleVersion}{#BundleFlavor}.zip';
 end;
 
 function CTranslateReady(Path: String): Boolean;

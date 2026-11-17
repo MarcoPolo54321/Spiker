@@ -1,16 +1,18 @@
-# Spiker 3.1.4 Refresh
+# Spiker 3.1.5
 
 ![Spiker](assets/readme-banner.jpg)
 
-[Download for Windows](https://github.com/MarcoPolo54321/Spiker/releases/tag/v3.1.4-refresh) · [Русская версия](README.md)
+[Download for Windows](https://github.com/MarcoPolo54321/Spiker/releases/tag/v3.1.5) · [Русская версия](README.md)
 
 Spiker is a Windows desktop app for live dictation, audio and video transcription, editing speaker labels, text-to-speech and AI-assisted editing. When local models are selected, audio and text are processed on the device.
 
-1. Download [Windows Setup](https://github.com/MarcoPolo54321/Spiker/releases/download/v3.1.4-refresh/Spiker-Setup-3.1.4-Windows.exe) and the [speech recognition ZIP](https://github.com/MarcoPolo54321/Spiker/releases/download/v3.1.4-refresh/Spiker-Models-3.1.4-Windows.zip).
+1. Download [Spiker 3.1.5 Setup](https://github.com/MarcoPolo54321/Spiker/releases/tag/v3.1.5) and the [compatible speech recognition ZIP](https://github.com/MarcoPolo54321/Spiker/releases/download/v3.1.4-refresh/Spiker-Models-3.1.4-Windows.zip).
 2. Keep both files together and run Setup. Setup verifies and extracts the model archive.
 3. Start Spiker. See the [model installation guide](README.md#дополнительные-модели) for optional voices, speaker diarization and local AI models.
 
 This refresh fixes extra windows on the first visit to the file queue, improves microphone startup, lets you choose an ASR model per file, and makes AI input plain text by default, with optional speaker labels and timestamps. The queue starts manually and continues automatically. Tutorials include full-screen videos. New transcripts are saved without app-level encryption in `Documents/Spiker`.
+
+Spiker can also use Ollama, LM Studio or llama.cpp running on another computer in a trusted private LAN. Enter that server's address in AI Processing. See the [LAN setup guide](docs/LOCAL_AI_LAN_RU.md). HTTP API keys remain blocked.
 
 | Home | File queue |
 | --- | --- |

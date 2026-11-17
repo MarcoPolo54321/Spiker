@@ -6,6 +6,8 @@ on:
     tags:
       - 'v*'
       - '!v3.1.4-refresh' # Manually verified Windows refresh.
+      - '!v3.1.4-refresh-lan'
+      - '!v3.1.5' # Manually verified installer uses the existing 3.1.4 model pack.
 
 permissions:
   contents: write
