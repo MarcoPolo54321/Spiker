@@ -190,6 +190,16 @@ if __name__ == "__main__":
 
 
 class ModelPathMigrationTests(unittest.TestCase):
+    def test_installed_vosk_is_found_in_an_older_user_profile(self):
+        from model_paths import resolve_vosk_model_path
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "program"
+            profile = Path(tmp) / "user-data"
+            user_model = profile / "models" / "vosk" / "vosk-model-small-ru-0.22"
+            user_model.mkdir(parents=True)
+            with patch.dict(os.environ, {"SPIKER_DATA_DIR": str(profile)}):
+                self.assertEqual(resolve_vosk_model_path(root), user_model.resolve())
+
     def test_legacy_vosk_folder_moves_into_models_tree(self):
         from model_paths import resolve_vosk_model_path
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"SPIKER_DATA_DIR": tmp}):

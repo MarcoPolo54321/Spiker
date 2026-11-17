@@ -10,6 +10,7 @@ param(
     [switch]$WithLiveDictation,
     [switch]$ReuseFullBuildEnvironment,
     [switch]$RefreshArtifacts,
+    [switch]$UnifiedFolder,
     [ValidateSet('Full', 'Basic')][string]$Profile = 'Full'
 )
 
@@ -26,6 +27,16 @@ $Version = (Get-Content (Join-Path $Root 'VERSION') -Raw).Trim()
 if (-not $Version) { throw 'VERSION is empty.' }
 $Dist = Join-Path $Root 'dist'
 $ArtifactSuffix = if ($Profile -eq 'Basic') { '-Basic' } elseif ($RefreshArtifacts) { '-Refresh' } else { '' }
+$UnifiedOutput = Join-Path $Dist "Spiker-Windows-$Version$ArtifactSuffix-Folder"
+if ($UnifiedFolder) {
+    if ($Profile -ne 'Full' -or $WithoutWhisperModel) {
+        throw '-UnifiedFolder requires the Full profile with all offline models.'
+    }
+    if (Test-Path -LiteralPath $UnifiedOutput) {
+        throw "Move or rename the previous copy before building: $UnifiedOutput"
+    }
+    $WithFasterWhisper = $WithFasterWhisperModel = $WithVoskModel = $WithLiveDictation = $true
+}
 $BuildDistPath = if ($Profile -eq 'Basic') { Join-Path $Dist 'basic-stage' } else { Join-Path $Dist 'release-stage-update' }
 $BuildVenvName = if ($Profile -eq 'Basic') { '.build-venv-basic' } else { '.build-venv' }
 if ($ReuseFullBuildEnvironment) {
@@ -374,6 +385,12 @@ New-Item -ItemType Directory -Path $BuildDistPath -Force | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed.' }
 
 $AppDir = Join-Path $BuildDistPath 'Spiker'
+# cmd.exe must see CRLF and no UTF-8 BOM in packaged batch helpers.
+$BatchEncoding = [System.Text.UTF8Encoding]::new($false, $true)
+Get-ChildItem -LiteralPath $AppDir -File -Filter '*.bat' | ForEach-Object {
+    $BatchSource = [System.IO.File]::ReadAllText($_.FullName, $BatchEncoding)
+    [System.IO.File]::WriteAllText($_.FullName, ($BatchSource -replace '\r\n|\r|\n', "`r`n"), $BatchEncoding)
+}
 $Exe = Join-Path $AppDir 'Spiker.exe'
 if (-not (Test-Path $Exe)) { throw "Expected executable not found: $Exe" }
 
@@ -472,8 +489,34 @@ foreach ($Relative in $MediumModelRelatives) {
     }
 }
 
+$BundleHash = @{}
+$BaseName = [IO.Path]::GetFileName($ModelArchive)
+$BundleHash[$BaseName] = Get-Sha256Hex $ModelArchive
+$MediumName = [IO.Path]::GetFileName($MediumModelArchive)
+if (Test-Path -LiteralPath $MediumModelArchive) { $BundleHash[$MediumName] = Get-Sha256Hex $MediumModelArchive }
+$LargeName = "Spiker-Models-Large-v3-$Version$ArtifactSuffix.zip"
+$LocalAIName = "Spiker-Models-Local-AI-$Version$ArtifactSuffix.zip"
+$DictationName = "Spiker-Models-Dictation-$Version$ArtifactSuffix.zip"
+if ($Profile -eq 'Full') {
+    $ExtraJson = & $Python (Join-Path $Root 'scripts\pack_extra_models.py') $Root $Dist $LargeName $LocalAIName $DictationName
+    if ($LASTEXITCODE -ne 0) { throw 'Could not package additional models.' }
+    if ($ExtraJson) {
+        $Extras = ConvertFrom-Json $ExtraJson
+        foreach ($item in $Extras.PSObject.Properties) { $BundleHash[$item.Name] = $item.Value }
+    }
+}
+$BundleHash | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $AppDir 'res\model-bundles.json')
+if ($UnifiedFolder) {
+    foreach ($Name in @($BaseName, $MediumName, $LargeName, $LocalAIName, $DictationName)) {
+        if (-not $BundleHash.ContainsKey($Name)) { throw "Required offline model archive missing: $Name" }
+    }
+    Write-Host 'Assembling the self-contained Windows folder...'
+    & $Python (Join-Path $Root 'scripts\assemble_windows_folder.py') $AppDir $Dist $UnifiedOutput
+    if ($LASTEXITCODE -ne 0) { throw 'Could not assemble the self-contained Windows folder.' }
+}
+
 $PortableMarker = Join-Path $AppDir 'portable.flag'
-Set-Content -LiteralPath $PortableMarker -Value 'Spiker portable data stays beside this application.' -Encoding ascii
+Set-Content -LiteralPath $PortableMarker -Value 'Model archives are unpacked into the models folder beside Spiker.exe.' -Encoding ascii
 $ArchiveCreated = $false
 for ($ArchiveAttempt = 1; $ArchiveAttempt -le 5; $ArchiveAttempt++) {
     try {
@@ -496,12 +539,12 @@ Remove-Item -LiteralPath $PortableMarker -Force
 if ($Installer) {
     Write-Host 'Building per-user installer...'
     if (-not (Test-Path -LiteralPath $ModelArchive)) { throw "Companion model archive was not created: $ModelArchive" }
-    & $ISCC "/DAppVersion=$Version" "/DAppFlavor=$ArtifactSuffix" "/DAppFolder=$InnoAppFolder" (Join-Path $Root 'installer\Spiker.iss')
+    & $ISCC "/DBaseSha=$($BundleHash[$BaseName])" "/DMediumSha=$($BundleHash[$MediumName])" "/DLargeSha=$($BundleHash[$LargeName])" "/DLocalAISha=$($BundleHash[$LocalAIName])" "/DDictationSha=$($BundleHash[$DictationName])" "/DBaseFaster=$([int][bool]$WithFasterWhisperModel)" "/DBaseVosk=$([int][bool]$WithVoskModel)" "/DBaseStreaming=$([int][bool]$WithLiveDictation)" "/DAppVersion=$Version" "/DAppFlavor=$ArtifactSuffix" "/DAppFolder=$InnoAppFolder" (Join-Path $Root 'installer\Spiker.iss')
     if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
 }
 
 $ChecksumLines = @()
-$ReleasePattern = "^Spiker-(Portable|Setup|Models)-$([regex]::Escape($Version))(-Basic|-Refresh)?\.(zip|exe)$"
+$ReleasePattern = "^Spiker-(Portable|Setup|Models(?:-Medium|-Large-v3|-Local-AI|-Dictation)?)-$([regex]::Escape($Version))(-Basic|-Refresh)?\.(zip|exe)$"
 foreach ($File in (Get-ChildItem $Dist -File | Where-Object { $_.Name -match $ReleasePattern })) {
     $Hash = Get-Sha256Hex $File.FullName
     $ChecksumLines += "$Hash  $($File.Name)"
@@ -512,6 +555,7 @@ $ChecksumLines | Set-Content -Path $ChecksumPath -Encoding ascii
 Write-Host ''
 Write-Host "Build completed. Version: $Version"
 Write-Host "Portable: $PortableZip"
+if ($UnifiedFolder) { Write-Host "Ready-to-copy folder: $UnifiedOutput" }
 Write-Host "Models: $ModelArchive"
 if ($Installer) { Write-Host "Installer: $(Join-Path $Dist "Spiker-Setup-$Version$ArtifactSuffix.exe")" }
 Write-Host "Checksums: $ChecksumPath"

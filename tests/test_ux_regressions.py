@@ -4,6 +4,7 @@ These source-level tests intentionally run without Qt, PortAudio or optional ML 
 Runtime Windows/GUI behavior remains covered by docs/TEST_PLAN_3.0.7.4.md.
 """
 from pathlib import Path
+import ast
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,11 +19,12 @@ class QueueUxRegressionTests(unittest.TestCase):
         self.assertIn("QTableWidget(0, 2)", self.queue)
         self.assertIn('["Файл", "Статус"]', self.queue)
         self.assertIn("setColumnWidth(1, 116)", self.queue)
-        self.assertIn("media_splitter.setSizes([320, 680])", self.queue)
+        self.assertIn("media_splitter.setStretchFactor(1, 7)", self.queue)
 
-    def test_editor_and_progress_panels_are_user_resizable(self):
+    def test_editor_grows_and_progress_panel_stays_compact(self):
         self.assertIn('QSplitter(Qt.Orientation.Vertical, self.player_panel)', self.queue)
-        self.assertIn('self.work_splitter.setSizes([120, 210])', self.queue)
+        self.assertIn('self.work_splitter.setStretchFactor(1, 1)', self.queue)
+        self.assertIn('activity.setMaximumHeight(activity.sizeHint().height())', self.queue)
         self.assertIn('self.media_splitter.setHandleWidth(8)', self.queue)
 
     def test_new_segments_are_appended_incrementally_without_rebuilding_document(self):
@@ -93,7 +95,7 @@ class DictationUxRegressionTests(unittest.TestCase):
         self.assertIn('def cancel(self):', self.main)
         self.assertIn('self.requestInterruption()', self.main)
         self.assertIn('self.cancelled.emit(self._committed_text)', self.main)
-        self.assertIn('self.whisper_worker.finished.connect(self._on_live_worker_finished)', self.main)
+        self.assertIn('worker.finished.connect(self._on_live_worker_finished)', self.main)
         self.assertIn('self.audio_processor.finished.connect(self._on_live_capture_finished)', self.main)
         self.assertIn('def _maybe_finish_live_cancellation(self):', self.main)
         self.assertIn('if processor is not None and processor.isRunning():', self.main)
@@ -111,7 +113,7 @@ class UserGuideRegressionTests(unittest.TestCase):
         main = (ROOT / "scripts" / "main.py").read_text(encoding="utf-8")
         self.assertIn('class UserGuidePage(QWidget)', guide)
         self.assertNotIn('Qt.WindowType.Window', guide)
-        self.assertIn('QTabWidget', guide)
+        self.assertNotIn('QTabWidget', guide)
         self.assertIn('pushButton_user_guide', main_menu)
         self.assertIn('setAccessibleName("Обучение")', main_menu)
         self.assertIn('QIcon(str(ICON_ROOT / "training_button.png"))', main_menu)
@@ -122,8 +124,18 @@ class UserGuideRegressionTests(unittest.TestCase):
         self.assertLess(help_pos, training_pos)
         self.assertIn('def open_user_guide(self):', main)
         self.assertIn('self.tabs.addTab(self.user_guide_page, "Обучение")', main)
-        for topic in ("Диктовка", "Файлы и очередь", "Участники", "Модели и производительность", "ИИ, экспорт и приватность"):
-            self.assertIn(topic, guide)
+        content = {target.id: ast.literal_eval(node.value)
+                   for node in ast.parse(guide).body if isinstance(node, ast.Assign)
+                   for target in node.targets if isinstance(target, ast.Name) and target.id in {"GUIDE_PAGES", "GUIDE_VIDEOS"}}
+        pages = dict(content["GUIDE_PAGES"])
+        videos = content["GUIDE_VIDEOS"]
+        self.assertEqual(set(pages), set(videos))
+        for topic in ("Диктовка", "Файлы и участники", "Обработка ИИ", "Озвучка", "Модели"):
+            self.assertTrue(videos[topic])
+            self.assertIn("<ol>", pages[topic])
+        for clips in videos.values():
+            for _, file in clips:
+                self.assertTrue((ROOT / "docs" / "videos" / file).is_file(), file)
 
     def test_user_icons_are_two_separate_transparent_png_resources(self):
         icons = ROOT / "icons"
@@ -143,17 +155,11 @@ class UserGuideRegressionTests(unittest.TestCase):
             self.assertIn(topic, plan)
 
 
-    def test_guide_content_uses_translucent_blue_panel_and_transparent_viewport(self):
+    def test_guide_uses_the_home_card_style(self):
         guide = (ROOT / "scripts" / "UI" / "UserGuide.py").read_text(encoding="utf-8")
         theme = (ROOT / "scripts" / "UI" / "theme.py").read_text(encoding="utf-8")
-        self.assertIn('setObjectName("userGuideContentPanel")', guide)
-        self.assertIn('browser.viewport().setAutoFillBackground(False)', guide)
-        self.assertIn('browser.viewport().setStyleSheet("background: transparent; border: 0;")', guide)
-        self.assertIn('QPalette.ColorRole.Base', guide)
-        self.assertIn('QFrame#userGuideContentPanel', theme)
-        self.assertIn('background: rgba(8, 38, 97, 168)', theme)
-        self.assertIn('QWidget#userGuidePage, QWidget#userGuideTabPage { background: transparent; }', theme)
-        self.assertNotIn('background: #333333', theme)
+        self.assertIn('LiquidGlassCard(self.card_body)', guide)
+        self.assertIn('QLabel#guideInstruction', theme)
 
     def test_training_utility_button_uses_same_transparent_style_as_settings_and_help(self):
         theme = (ROOT / "scripts" / "UI" / "theme.py").read_text(encoding="utf-8")

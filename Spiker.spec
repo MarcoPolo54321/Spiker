@@ -1,11 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for the Windows onedir release of СПИКЕР."""
 from pathlib import Path
+import os
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 from PySide6.QtCore import QLibraryInfo
 
 ROOT = Path(SPECPATH).resolve()
 SCRIPTS = ROOT / "scripts"
+SIDECAR_MODELS = os.environ.get("SPIKER_SIDECAR_MODELS") == "1"
 
 binaries = []
 datas = []
@@ -40,6 +42,8 @@ hiddenimports = [
     "docx",
     "keyring",
     "keyring.backends.Windows",
+    "document_storage",
+    "ai_transfer",
     "app_config",
     "app_logging",
     "ai_provider",
@@ -54,6 +58,9 @@ hiddenimports = [
     "UI.Info_menu_script",
     "UI.Dictation_audio_menu_script",
     "transcription.audio_preparation",
+    "transcription.microphone",
+    "transcription.qt_microphone",
+    "transcription.dictation_smoke",
     "transcription.wav_to_text",
     "transcription.hardware_diagnostics",
     "transcription.faster_whisper_backend",
@@ -76,6 +83,7 @@ for source in SCRIPTS.rglob("*.py"):
     if "__pycache__" in source.parts:
         continue
     datas.append((str(source), str(source.relative_to(ROOT).parent)))
+datas.append((str(SCRIPTS / "model_data_folder.ps1"), "scripts"))
 
 # Keep source/portable launch and model installation scripts next to the executable.
 for filename in (
@@ -89,8 +97,8 @@ docs_dir = ROOT / "docs"
 if docs_dir.is_dir():
     datas.append((str(docs_dir), "docs"))
 
-# llama.cpp is a small native CPU runtime; the multi-GB GigaChat weight remains
-# a separately downloadable user model in Documents/Spiker/models/llm.
+# llama.cpp is a small native CPU runtime. The release model pack installs
+# multi-GB weights beside Spiker.exe in models/llm.
 llama_runtime = ROOT / "runtime" / "llama"
 if llama_runtime.is_dir():
     datas.append((str(llama_runtime), "runtime/llama"))
@@ -107,7 +115,7 @@ if icons_dir.exists():
 # Public release builds include exactly the pinned default model if the build script
 # placed it in the source tree. Arbitrary local model weights are deliberately excluded.
 whisper_default = ROOT / "models" / "whisper" / "ggml-small.bin"
-if whisper_default.is_file():
+if whisper_default.is_file() and not SIDECAR_MODELS:
     datas.append((str(whisper_default), "models/whisper"))
 model_source = ROOT / "models" / "whisper" / "MODEL_SOURCE.md"
 if model_source.is_file():
@@ -131,7 +139,6 @@ for package in ("pywhispercpp", "vosk", "imageio_ffmpeg", "pyaudio", "docx", "ke
 
 # Advanced ML dependencies remain optional to keep the normal installer manageable.
 # Set SPIKER_PACKAGE_FASTER_WHISPER=1 to embed faster-whisper/CTranslate2.
-import os
 if os.environ.get("SPIKER_PACKAGE_FASTER_WHISPER") == "1":
     for package in ("faster_whisper", "ctranslate2"):
         package_datas, package_binaries, package_hiddenimports = collect_all(package)
@@ -141,7 +148,7 @@ if os.environ.get("SPIKER_PACKAGE_FASTER_WHISPER") == "1":
 
 # The full Windows installer can include the pinned local Small CTranslate2 model.
 # Only the canonical model directory is packaged; unrelated local model folders stay out.
-if os.environ.get("SPIKER_PACKAGE_FASTER_WHISPER_MODEL") == "1":
+if not SIDECAR_MODELS and os.environ.get("SPIKER_PACKAGE_FASTER_WHISPER_MODEL") == "1":
     faster_model = ROOT / "models" / "faster-whisper" / "small"
     required_faster_files = ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt")
     missing_faster_files = [name for name in required_faster_files if not (faster_model / name).is_file()]
@@ -160,7 +167,7 @@ if os.environ.get("SPIKER_PACKAGE_FASTER_WHISPER_MODEL") == "1":
 
 
 # Package the small Russian Vosk fallback when requested by a full offline build.
-if os.environ.get("SPIKER_PACKAGE_VOSK_MODEL") == "1":
+if not SIDECAR_MODELS and os.environ.get("SPIKER_PACKAGE_VOSK_MODEL") == "1":
     vosk_model = ROOT / "models" / "vosk" / "vosk-model-small-ru-0.22"
     required_vosk_files = (
         "am/final.mdl", "graph/HCLr.fst", "graph/Gr.fst", "graph/phones/word_boundary.int"
@@ -179,14 +186,16 @@ if os.environ.get("SPIKER_PACKAGE_SHERPA") == "1":
         datas += package_datas
         binaries += package_binaries
         hiddenimports += package_hiddenimports
-    for feature in ('tts', 'diarization'):
-        folder = ROOT / 'models' / feature
-        if not folder.is_dir(): raise RuntimeError('Missing offline model folder: ' + feature)
-        datas.append((str(folder), 'models/' + feature))
-    live_model = ROOT / "models" / "sherpa-onnx" / "sherpa-onnx-streaming-t-one-russian-2025-09-08"
-    if not (live_model / "model.onnx").is_file() or not (live_model / "tokens.txt").is_file():
-        raise RuntimeError("SPIKER_PACKAGE_SHERPA=1 requires the downloaded T-one model in models/sherpa-onnx.")
-    datas.append((str(live_model), "models/sherpa-onnx/sherpa-onnx-streaming-t-one-russian-2025-09-08"))
+    if not SIDECAR_MODELS:
+        for feature in ('tts', 'diarization'):
+            folder = ROOT / 'models' / feature
+            if not folder.is_dir():
+                raise RuntimeError('Missing offline model folder: ' + feature)
+            datas.append((str(folder), 'models/' + feature))
+        live_model = ROOT / "models" / "sherpa-onnx" / "sherpa-onnx-streaming-t-one-russian-2025-09-08"
+        if not (live_model / "model.onnx").is_file() or not (live_model / "tokens.txt").is_file():
+            raise RuntimeError("SPIKER_PACKAGE_SHERPA=1 requires the downloaded T-one model in models/sherpa-onnx.")
+        datas.append((str(live_model), "models/sherpa-onnx/sherpa-onnx-streaming-t-one-russian-2025-09-08"))
 
 hiddenimports += collect_submodules("PySide6.QtMultimedia")
 hiddenimports = sorted(set(hiddenimports))
@@ -204,8 +213,8 @@ analysis = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
-    excludes=["pytest", "IPython", "jupyter", "tkinter", *optional_excludes],
+    runtime_hooks=[str(SCRIPTS / "pyi_windows_version.py")],
+    excludes=["pytest", "IPython", "jupyter", "tkinter", "cryptography", *optional_excludes],
     noarchive=False,
     optimize=0,
 )

@@ -12,7 +12,7 @@ _scripts_dir = _project_root / "scripts"
 sys.path.insert(0, str(_scripts_dir))
 from app_logging import configure_logging
 from app_config import load_settings
-from app_paths import get_user_data_root
+from app_paths import get_user_data_root, history_data_dir
 from model_bundle import unpack_companion_models
 from time_utils import format_duration as _format_duration
 configure_logging(_project_root)
@@ -71,6 +71,7 @@ def get_vosk_model():
 
 def get_whisper_model_path():
     """Lightweight model-path lookup used by Settings without importing recognition libraries."""
+    from dictation_models import available_whisper_models, is_whisper_model
     candidates = []
     user_data_root = get_user_data_root(_project_root)
     config_path = user_data_root / "data" / "model_paths" / "whisper_model.txt"
@@ -84,24 +85,14 @@ def get_whisper_model_path():
     except OSError:
         pass
     candidates.extend([
-        user_data_root / "models" / "whisper" / "ggml-small.bin",
-        user_data_root / "models" / "whisper" / "ggml-medium.bin",
         _project_root / "models" / "whisper" / "ggml-small.bin",
         _project_root / "models" / "whisper" / "ggml-medium.bin",
         _project_root / "models" / "ggml-small.bin",
         _project_root / "ggml-medium.bin",
+        user_data_root / "models" / "whisper" / "ggml-small.bin",
+        user_data_root / "models" / "whisper" / "ggml-medium.bin",
     ])
-    for models_root in (user_data_root / "models", _project_root / "models"):
-        if not models_root.is_dir():
-            continue
-        try:
-            candidates.extend(sorted(
-                (item for item in models_root.rglob("*.bin")
-                 if "faster-whisper" not in {part.lower() for part in item.parts}),
-                key=lambda item: item.name.lower(),
-            ))
-        except OSError:
-            pass
+    candidates.extend(available_whisper_models(_project_root / "models", user_data_root / "models"))
     seen = set()
     for candidate in candidates:
         try:
@@ -109,7 +100,7 @@ def get_whisper_model_path():
             if path in seen:
                 continue
             seen.add(path)
-            if path.is_file() and path.stat().st_size >= 10 * 1024 * 1024:
+            if is_whisper_model(path):
                 return path
         except OSError:
             continue
@@ -142,6 +133,7 @@ class FileTranscriptionWorker(QThread):
         self.speaker_stats = {}
         self.speaker_note = ""
         self.backend_used = "whispercpp"
+        self.model_choice = "auto"
 
     def cancel(self):
         self.requestInterruption()
@@ -228,6 +220,12 @@ class FileTranscriptionWorker(QThread):
         logger.info("File transcription started: %s resume_from=%.2fs", self.file_path, self.resume_from_seconds)
         try:
             preferences = load_settings(_project_root)
+            if self.model_choice.startswith("faster:"):
+                preferences.update(
+                    transcription_engine="faster-whisper",
+                    faster_whisper_model=self.model_choice.partition(":")[2],
+                    faster_whisper_model_path="",
+                )
             engine = str(preferences.get("transcription_engine", "auto"))
             faster_model = resolve_faster_model(
                 _project_root,
@@ -392,8 +390,8 @@ class FileTranscriptionWorker(QThread):
                     self.segments, self.speaker_stats = apply_speaker_diarization(
                         prepared.path, self.segments, _project_root,
                         hf_token=os.environ.get("HF_TOKEN", ""),
-                        min_speakers=preferences.get("speaker_min") or None,
-                        max_speakers=preferences.get("speaker_max") or None,
+                        min_speakers=getattr(self, "speaker_count", 2) or None,
+                        max_speakers=getattr(self, "speaker_count", 2) or 2,
                         device=preferences.get("compute_device", "auto"),
                         stage_callback=lambda message: self.progress_changed.emit(99, message, text, full_duration),
                         cancel_callback=self.isInterruptionRequested,
@@ -438,121 +436,72 @@ class FileTranscriptionWorker(QThread):
 
 # --------------------------------------------- НАДИКТОВКА -------------------------------------------------------------
 class AudioProcessor(QThread):
-    """Capture mono PCM from the microphone and forward it without touching widgets."""
-    recognized_text = Signal(str)
-    partial_text = Signal(str)
+    """Own the audio device on one thread and send PCM to the decoder."""
     level_changed = Signal(int)
+    input_ready = Signal()
 
-    def __init__(self, model, recognition, stream, ui=None, parent=None,
-                 use_whisper=False, use_streaming=False, chunk_queue=None, chunk_seconds=5,
-                 capture_done_event=None):
-        super().__init__(parent)
-        self.model = model
-        self.recognition = recognition
-        self.stream = stream
-        self.ui = ui
-        self.is_recording = True
-        self.use_whisper = bool(use_whisper)
-        self.use_streaming = bool(use_streaming)
-        self.frames = []
-        self.read_error = None
-        self.audio_truncated = False
+    def __init__(self, endpoint, chunk_queue, chunk_seconds, capture_done_event):
+        super().__init__()
+        self.endpoint = endpoint
         self.chunk_queue = chunk_queue
-        self.capture_done_event = capture_done_event or threading.Event()
-        self.chunk_seconds = max(0.1, float(chunk_seconds))
-        self.read_frames = 1600 if self.use_streaming else 4000  # 100 ms for online ASR.
-        self._pending_pcm = bytearray()
+        self.capture_done_event = capture_done_event
+        self._stop = threading.Event()
         self.discard_pending = False
-        self._chunk_bytes = max(2, int(16000 * 2 * self.chunk_seconds))
-
-    def _queue_audio(self, chunk):
-        if self.chunk_queue is None:
-            return
-        try:
-            # Fast path: never block regular microphone reads while the decoder is keeping up.
-            self.chunk_queue.put_nowait(chunk)
-            return
-        except queue_module.Full:
-            # Stop the hardware stream before waiting for one final queue slot. This prevents
-            # PortAudio from accumulating unread frames while the decoder catches up.
-            self.read_error = (
-                "Потоковый распознаватель отстал примерно на 12 секунд. "
-                "Запись автоматически остановлена; уже поставленные в очередь фрагменты будут обработаны."
-            )
-            self.is_recording = False
-            try:
-                if self.stream is not None and self.stream.is_active():
-                    self.stream.stop_stream()
-            except Exception:
-                logging.getLogger("app.transcription_errors").debug(
-                    "Could not stop microphone stream after live backlog overflow", exc_info=True
-                )
-            try:
-                # Preserve the frame that detected overflow. Since capture has stopped, this
-                # one bounded wait does not create further microphone backlog.
-                self.chunk_queue.put(chunk, timeout=5.0)
-            except queue_module.Full:
-                self.audio_truncated = True
-                self.read_error += (
-                    " Последний аудиоблок также не удалось передать декодеру; "
-                    "в конце расшифровки может отсутствовать короткий фрагмент."
-                )
+        self.frames_received = 0
+        self.peak_rms = 0
+        self.read_error = None
+        self._chunk_bytes = int(16000 * 2 * chunk_seconds)
 
     def run(self):
+        logger = logging.getLogger("processing.live_dictation")
+        capture = None
+        pending = bytearray()
         try:
-            while self.is_recording:
-                try:
-                    data = self.stream.read(self.read_frames, exception_on_overflow=False)
-                except Exception as exc:
-                    if self.is_recording:
-                        self.read_error = str(exc)
-                    break
+            if self._stop.is_set():
+                return
+            import audioop
+            from transcription.qt_microphone import WindowsCapture
+            capture = WindowsCapture(self.endpoint, self._stop.is_set, logger)
+            while not self._stop.is_set():
+                data = capture.read(1600)
                 if not data:
-                    continue
-                import audioop
-                self.level_changed.emit(min(100, int(audioop.rms(data, 2) / 32768 * 400)))
-                if self.use_streaming:
-                    # Online ASR receives each ~100 ms frame immediately.
-                    self._queue_audio(bytes(data))
-                elif self.use_whisper:
-                    self._pending_pcm.extend(data)
-                    while len(self._pending_pcm) >= self._chunk_bytes:
-                        chunk = bytes(self._pending_pcm[:self._chunk_bytes])
-                        del self._pending_pcm[:self._chunk_bytes]
-                        self._queue_audio(chunk)
-                        if not self.is_recording:
-                            break
-                else:
-                    if self.recognition.AcceptWaveform(data):
-                        answer = json.loads(self.recognition.Result())
-                        if answer.get("text"):
-                            self.recognized_text.emit(answer["text"])
-                        self.partial_text.emit("")
-                    else:
-                        answer = json.loads(self.recognition.PartialResult())
-                        self.partial_text.emit(str(answer.get("partial", "") or ""))
+                    if self._stop.is_set():
+                        break
+                    raise OSError("Микрофон перестал передавать данные. Обновите список входов.")
+                rms = audioop.rms(data, 2)
+                self.peak_rms = max(self.peak_rms, rms)
+                if not self.frames_received and not self._stop.is_set():
+                    self.input_ready.emit()
+                self.frames_received += len(data) // 2
+                self.level_changed.emit(min(100, round(100 * (rms / 8192) ** 0.6)))
+                pending.extend(data)
+                while len(pending) >= self._chunk_bytes and not self.discard_pending:
+                    chunk = bytes(pending[:self._chunk_bytes])
+                    self.chunk_queue.put_nowait(chunk)
+                    del pending[:self._chunk_bytes]
+        except queue_module.Full:
+            self.read_error = "Распознавание отстаёт от записи. Сохранён уже обработанный текст."
+        except Exception as exc:
+            if not self._stop.is_set():
+                self.read_error = str(exc)
+                logger.warning("Input stopped with an error", exc_info=True)
         finally:
-            if (self.use_whisper or self.use_streaming) and self.chunk_queue is not None:
-                if self._pending_pcm and not self.discard_pending:
-                    self._queue_audio(bytes(self._pending_pcm))
-                self._pending_pcm.clear()
-                # The consumer polls for capture completion and drains everything already queued.
-                # Never block the microphone thread trying to insert a sentinel into a full queue.
-                self.capture_done_event.set()
+            if capture is not None:
+                try:
+                    capture.close()
+                except Exception:
+                    logger.warning("Could not release audio capture", exc_info=True)
+            if pending and not self.discard_pending and not self.read_error:
+                try:
+                    self.chunk_queue.put(bytes(pending), timeout=1.0)
+                except queue_module.Full:
+                    self.read_error = "Не удалось передать последний фрагмент распознавателю."
+            logger.info("Capture finished: samples=%d max_rms=%d", self.frames_received, self.peak_rms)
+            self.capture_done_event.set()
 
-
-    def stop(self, discard_pending: bool = False):
-        self.is_recording = False
+    def stop(self, discard_pending=False):
         self.discard_pending = bool(discard_pending)
-        if self.stream is not None:
-            try:
-                self.stream.stop_stream()
-            except Exception:
-                pass
-            try:
-                self.stream.close()
-            except Exception:
-                pass
+        self._stop.set()
 
 
 class WhisperDictationWorker(QThread):
@@ -616,7 +565,7 @@ class WhisperDictationWorker(QThread):
 
     def run(self):
         from transcription.wav_to_text import (
-            add_punctuation_and_capitalize, find_whisper_model, preload_whisper_model,
+            add_punctuation_and_capitalize, preload_whisper_model,
             transcribe_with_whisper,
         )
         work_dir = Path(tempfile.gettempdir()) / "Spiker" / "audio"
@@ -625,18 +574,10 @@ class WhisperDictationWorker(QThread):
         configured = str(settings.get("dictation_model_path", "") or "").strip()
         model_path = Path(configured).expanduser() if configured else None
         if model_path is None or not model_path.is_file():
-            fast_candidates = []
-            for models_root in (get_user_data_root(_project_root) / "models", _project_root / "models"):
-                if models_root.is_dir():
-                    fast_candidates.extend(
-                        path for path in models_root.rglob("*.bin")
-                        if any(tag in path.name.lower() for tag in ("tiny", "base", "small"))
-                        and "faster-whisper" not in {part.lower() for part in path.parts}
-                    )
-            model_path = (
-                sorted(fast_candidates, key=lambda path: (path.name.lower(), str(path).lower()))[0]
-                if fast_candidates else find_whisper_model()
-            )
+            from dictation_models import available_whisper_models, pick_dictation_model
+            model_path = pick_dictation_model(available_whisper_models(
+                _project_root / "models", get_user_data_root(_project_root) / "models",
+            ))
         if model_path is None or not Path(model_path).is_file():
             self.failed.emit("Не найдена модель для диктовки. Выберите модель в настройках.")
             return
@@ -727,22 +668,24 @@ class WhisperDictationWorker(QThread):
             self.failed.emit(str(exc))
 
 
-class SherpaDictationWorker(QThread):
+class StreamingDictationWorker(QThread):
     """True streaming Russian dictation; decodes each microphone frame without WAV files."""
     ready = Signal()
-    text_updated = Signal(str)
     text_parts_updated = Signal(str, str)
     status_changed = Signal(str)
     succeeded = Signal(str)
     failed = Signal(str)
     cancelled = Signal(str)
 
-    def __init__(self, chunk_queue, model_dir: Path, num_threads: int = 2, parent=None, capture_done_event=None):
+    def __init__(self, chunk_queue, model_dir: Path, num_threads: int = 2, parent=None, capture_done_event=None,
+                 use_vosk_backup=False, engine="sherpa"):
         super().__init__(parent)
         self.chunk_queue = chunk_queue
         self.capture_done_event = capture_done_event or threading.Event()
-        self.model_dir = Path(model_dir)
+        self.model_dir = Path(model_dir) if model_dir else None
         self.num_threads = max(1, int(num_threads or 2))
+        self.use_vosk_backup = use_vosk_backup
+        self.backend = "Vosk" if engine == "vosk" else "T-one"
 
     def cancel(self):
         self.requestInterruption()
@@ -755,13 +698,23 @@ class SherpaDictationWorker(QThread):
 
     def run(self):
         try:
-            from transcription.live_streaming import create_t_one_recognizer, SherpaStreamingSession
-            self.status_changed.emit("Загружаем потоковую модель T-one…")
-            recognizer = create_t_one_recognizer(self.model_dir, self.num_threads)
-            session = SherpaStreamingSession(recognizer, sample_rate=16000)
-            self.status_changed.emit("Потоковая модель готова. Речь распознаётся по мере поступления аудио.")
+            from transcription.live_streaming import (
+                AutoDictationSession, SherpaStreamingSession, VoskStreamingSession, create_t_one_recognizer,
+            )
+            def fallback():
+                from vosk import KaldiRecognizer
+                recognizer = KaldiRecognizer(get_vosk_model(), 16000)
+                self.backend = "Vosk"
+                return VoskStreamingSession(recognizer)
+            self.status_changed.emit(f"Загружаем модель {self.backend}…")
+            if self.backend == "Vosk":
+                session = fallback()
+            else:
+                session = AutoDictationSession(
+                    lambda: SherpaStreamingSession(create_t_one_recognizer(self.model_dir, self.num_threads)),
+                    fallback if self.use_vosk_backup else None, self.status_changed.emit,
+                )
             self.ready.emit()
-            last_text = ""
             last_parts = None
             while not self.isInterruptionRequested():
                 try:
@@ -774,15 +727,12 @@ class SherpaDictationWorker(QThread):
                     break
                 if chunk is None:
                     break
-                preview, endpoint = session.feed_pcm16(chunk)
-                if preview and preview != last_text:
-                    self.text_updated.emit(preview)
-                    last_text = preview
+                _, endpoint = session.feed_pcm16(chunk)
                 parts = (session.committed_text, session.partial_text)
                 if parts != last_parts:
                     self.text_parts_updated.emit(parts[0], parts[1])
                     last_parts = parts
-                if endpoint:
+                if endpoint and parts[0]:
                     self.status_changed.emit("Фраза зафиксирована. Продолжаю слушать…")
             if self.isInterruptionRequested():
                 preserved = " ".join(part for part in (session.committed_text, session.partial_text) if part).strip()
@@ -795,11 +745,13 @@ class SherpaDictationWorker(QThread):
             except Exception:
                 pass
             if result:
-                self.text_updated.emit(result)
                 self.text_parts_updated.emit(result, "")
+            logging.getLogger("processing.live_dictation").info(
+                "Recognition finished: backend=%s characters=%d", self.backend, len(result)
+            )
             self.succeeded.emit(result)
         except Exception as exc:
-            logging.getLogger("app.transcription_errors").exception("Sherpa live dictation failed")
+            logging.getLogger("app.transcription_errors").exception("Streaming dictation failed")
             self.failed.emit(str(exc))
 
 
@@ -891,8 +843,8 @@ class DictationAudioDialog(QDialog):
         self.timer.timeout.connect(self.update_timer)
         self.elapsed_time = QTime(0, 0, 0)
 
-        self.record_icon_path = "../icons/record_btn.svg"
-        self.recording_icon_path = "../icons/record_btn_red.svg"
+        self.record_icon_path = str(_project_root / "icons" / "record_btn.svg")
+        self.recording_icon_path = str(_project_root / "icons" / "record_btn_red.svg")
 
         self.ui.pushButton_back_to_main.clicked.connect(self.back_to_main)
         self.ui.pushButton_ai_process.clicked.connect(self.open_ai_from_dictation)
@@ -910,41 +862,53 @@ class DictationAudioDialog(QDialog):
         self.ui.lineEdit_way_to_save_file.mousePressEvent = lambda event: self.save_file_dialog_dict_window(self.ui.lineEdit_way_to_save_file)
         self.ui.pushButton_save_as.clicked.connect(lambda: self.save_file_dialog_dict_window(self.ui.lineEdit_way_to_save_file))
 
-        self.recognition = None
-        self.stream = None
-        self.audio_interface = None
         self.is_recording = False
         self.audio_processor = None
-        self.whisper_mode = False
         self.live_engine = ""
         self.sherpa_model_dir = None
         self.whisper_worker = None
         self.live_chunk_queue = None
         self.live_capture_done = None
-        self.vosk_committed_text = ""
-        self.vosk_partial_text = ""
         self._clear_after_live_cancel = False
         self._live_cancel_pending = False
         self._pending_live_cancel_text = ""
 
         self.ui.pushButton_cancel_dictation.clicked.connect(self.abort_live_dictation)
-        self.ui.refresh_microphones.clicked.connect(self.refresh_microphones)
-        self.refresh_microphones()
+        self.ui.microphone_refresh.clicked.connect(self.refresh_microphones)
         self.ui.pushButton_ai_process.setEnabled(
             bool(self.ui.textEdit_field_to_text_from_audio.toPlainText().strip())
         )
 
         # Установить начальный текст для поля с текстовыми подсказками пользователю
-        self.ui.lineEdit_words_to_dict_info.setEnabled(False)
-        self.ui.lineEdit_words_to_dict_info.setText("   Для начала записи нажмите на кнопку справа")
+        self.ui.lineEdit_words_to_dict_info.setText("Выберите микрофон и нажмите «Начать запись».")
+
+    def refresh_microphones(self):
+        if self.is_recording or (self.whisper_worker and self.whisper_worker.isRunning()):
+            return
+        combo = self.ui.microphone_combo
+        remembered = combo.currentData() or ""
+        try:
+            from transcription.qt_microphone import capture_devices
+            devices = capture_devices()
+        except Exception:
+            logging.getLogger("app.transcription_errors").exception("Could not enumerate Windows microphones")
+            return
+        combo.clear()
+        for identifier, label in devices:
+            combo.addItem(label, identifier)
+        combo.setCurrentIndex(max(0, combo.findData(remembered)))
 
     def open_ai_from_dictation(self):
         text = self.ui.textEdit_field_to_text_from_audio.toPlainText().strip()
         if not text:
             return
-        self.main_window.open_ai_processing(text, "Диктовка")
+        from ai_transfer import ask_transfer_options
+        if ask_transfer_options(self, has_timestamps=False, has_speakers=False) is not None:
+            self.main_window.open_ai_processing(text, "Диктовка")
 
     def _notify_dictation_busy(self, busy: bool):
+        self.ui.microphone_combo.setEnabled(not busy)
+        self.ui.microphone_refresh.setEnabled(not busy)
         callback = getattr(self.main_window, "_dictation_busy_changed", None)
         if callable(callback):
             callback(bool(busy))
@@ -952,7 +916,7 @@ class DictationAudioDialog(QDialog):
     def set_queue_busy(self, busy: bool):
         # Queue/file recognition and dictation use separate Whisper contexts and may run concurrently.
         live_running = self.whisper_worker is not None and self.whisper_worker.isRunning()
-        self.ui.pushButton_record_start.setEnabled(not self.is_recording and not live_running)
+        self.ui.pushButton_record_start.setEnabled(self.is_recording or not live_running)
         if busy:
             self.ui.lineEdit_words_to_dict_info.setToolTip(
                 "Очередь работает параллельно. Для этого загружается отдельный контекст модели, что увеличивает расход ОЗУ."
@@ -960,37 +924,17 @@ class DictationAudioDialog(QDialog):
         else:
             self.ui.lineEdit_words_to_dict_info.setToolTip("")
 
-    def refresh_microphones(self):
-        if self.is_recording:
-            return
-        import pyaudio
-        from app_config import load_settings
-        selected = self.ui.microphone_combo.currentText() or load_settings(_project_root).get('microphone_name', '')
-        self.ui.microphone_combo.clear()
-        self.ui.microphone_combo.addItem('По умолчанию Windows', None)
-        audio = pyaudio.PyAudio()
-        try:
-            for index in range(audio.get_device_count()):
-                info = audio.get_device_info_by_index(index)
-                if info.get('maxInputChannels', 0) > 0:
-                    api = audio.get_host_api_info_by_index(int(info['hostApi']))['name']
-                    label = str(info['name']) + ' · ' + str(api)
-                    self.ui.microphone_combo.addItem(label, index)
-            index = self.ui.microphone_combo.findText(selected)
-            if index >= 0: self.ui.microphone_combo.setCurrentIndex(index)
-        finally:
-            audio.terminate()
-
     def load_model(self):
         """Select an explicitly requested engine or the best locally installed live engine."""
         try:
-            import pyaudio
             settings = load_settings(_project_root)
             from transcription.live_streaming import resolve_t_one_model, is_sherpa_available
             engine_preference = str(settings.get("dictation_engine", "auto") or "auto").lower()
+            self._vosk_backup = False
             configured_whisper = str(settings.get("dictation_model_path", "") or "").strip()
             whisper_path = Path(configured_whisper).expanduser() if configured_whisper else None
-            if whisper_path is not None and not whisper_path.is_file():
+            from dictation_models import is_whisper_model
+            if whisper_path is not None and not is_whisper_model(whisper_path):
                 whisper_path = None
 
             sherpa_path = resolve_t_one_model(
@@ -1010,116 +954,46 @@ class DictationAudioDialog(QDialog):
             # Auto follows the documented streaming-first order. Select Whisper explicitly
             # in settings when the user prefers window-based dictation.
             if engine_preference == "sherpa" or (engine_preference == "auto" and sherpa_ready):
-                if not sherpa_path:
-                    raise FileNotFoundError(
-                        "Модель потоковой диктовки T-one не найдена. Запустите Install_Live_Dictation.bat."
-                    )
-                if not is_sherpa_available():
-                    raise RuntimeError(
-                        "sherpa-onnx не установлен. Запустите Install_Live_Dictation.bat."
-                    )
+                if not sherpa_ready:
+                    raise RuntimeError("Потоковая модель T-one не установлена. Выберите «Авто» или восстановите модели.")
                 self.live_engine = "sherpa"
+                self._vosk_backup = engine_preference == "auto" and vosk_ready
                 self.sherpa_model_dir = sherpa_path
-                self.whisper_mode = False
-                self.recognition = None
-            elif engine_preference == "vosk" or (engine_preference == "auto" and not sherpa_ready and vosk_ready):
+            elif engine_preference == "vosk" or (engine_preference == "auto" and vosk_ready):
                 if not vosk_ready:
-                    raise FileNotFoundError("Полная модель Vosk не найдена в models/vosk.")
-                from vosk import KaldiRecognizer
-                self.recognition = KaldiRecognizer(get_vosk_model(), 16000)
+                    raise RuntimeError("Модель Vosk не найдена. Выберите «Авто» или восстановите модели.")
                 self.live_engine = "vosk"
-                self.whisper_mode = False
-                self.sherpa_model_dir = None
             else:
-                if engine_preference == "whisper" and whisper_path is None:
-                    raise FileNotFoundError("Выберите локальную модель Whisper для режима Whisper-диктовки.")
                 if whisper_path is None:
                     from transcription.wav_to_text import find_whisper_model
                     whisper_path = find_whisper_model()
                 if whisper_path is None or not Path(whisper_path).is_file():
-                    raise FileNotFoundError(
-                        "Не найдена модель диктовки. Установите T-one через Install_Live_Dictation.bat, "
-                        "полную модель Vosk или выберите модель Whisper в настройках."
-                    )
+                    raise FileNotFoundError("Не найдена модель диктовки. Восстановите модели в настройках.")
                 self.live_engine = "whisper"
-                self.whisper_mode = True
-                self.recognition = None
-                self.sherpa_model_dir = None
-
-            from app_config import save_settings
-            save_settings(_project_root, {'microphone_name': self.ui.microphone_combo.currentText()})
-            self.audio_interface = pyaudio.PyAudio()
-            # 100 ms PortAudio frames reduce capture-to-decoder latency for online ASR.
-            self.stream = self.audio_interface.open(
-                format=pyaudio.paInt16,
-                channels=1,
-                rate=16000,
-                input=True,
-                input_device_index=self.ui.microphone_combo.currentData(),
-                frames_per_buffer=1600,
-                start=False,
-            )
             return True
         except Exception as exc:
-            if self.stream is not None:
-                try:
-                    self.stream.close()
-                except Exception:
-                    pass
-                self.stream = None
-            if self.audio_interface is not None:
-                try:
-                    self.audio_interface.terminate()
-                except Exception:
-                    pass
-                self.audio_interface = None
-            QMessageBox.critical(self, "Не удалось запустить диктовку", f"Не удалось подготовить модель или микрофон.\n\n{exc}")
+            self.ui.lineEdit_words_to_dict_info.setText(str(exc))
+            logging.getLogger("processing.live_dictation").warning("Cannot start dictation: %s", exc)
             return False
 
     def listen(self):
-        if self.audio_processor and self.audio_processor.isRunning():
-            self.audio_processor.stop()
-            self.audio_processor.wait()
-        if self.stream is not None:
-            try:
-                if not self.stream.is_active():
-                    self.stream.start_stream()
-            except AttributeError:
-                self.stream.start_stream()
-        live_model = get_vosk_model() if self.live_engine == "vosk" else None
-        self.timer.start(1000)
         self.audio_processor = AudioProcessor(
-            live_model, self.recognition, self.stream, self.ui,
-            use_whisper=self.live_engine == "whisper",
-            use_streaming=self.live_engine == "sherpa",
-            chunk_queue=self.live_chunk_queue,
-            chunk_seconds=2,
-            capture_done_event=self.live_capture_done,
+            self.ui.microphone_combo.currentData() or "",
+            self.live_chunk_queue,
+            2 if self.live_engine == "whisper" else 0.1,
+            self.live_capture_done,
         )
+        self.audio_processor.input_ready.connect(self._on_input_ready)
         self.audio_processor.level_changed.connect(self.ui.microphone_level.setValue)
-        self.audio_processor.recognized_text.connect(self._append_vosk_text)
-        self.audio_processor.partial_text.connect(self._set_vosk_partial_text)
         self.audio_processor.finished.connect(self._on_live_capture_finished)
         self.audio_processor.start()
 
-    def _append_vosk_text(self, text):
-        if text.strip():
-            self.vosk_committed_text = " ".join(part for part in (self.vosk_committed_text, text.strip()) if part)
-        self.vosk_partial_text = ""
-        self._render_vosk_live_text()
-
-    def _set_vosk_partial_text(self, text):
-        self.vosk_partial_text = (text or "").strip()
-        self._render_vosk_live_text()
-
-    def _render_vosk_live_text(self):
-        live_text = " ".join(part for part in (self.vosk_committed_text, self.vosk_partial_text) if part).strip()
-        editor = self.ui.textEdit_field_to_text_from_audio
-        scrollbar = editor.verticalScrollBar()
-        at_bottom = scrollbar.value() >= scrollbar.maximum() - 4
-        editor.setPlainText(live_text)
-        if at_bottom:
-            scrollbar.setValue(scrollbar.maximum())
+    def _on_input_ready(self):
+        if not self.is_recording:
+            return
+        backend = getattr(self.whisper_worker, "backend", "Whisper")
+        self.ui.lineEdit_words_to_dict_info.setText(f"Микрофон подключён. Теперь говорите ({backend}).")
+        self.timer.start(1000)
 
     def save_file_dialog_dict_window (self, line_edit):                     # Открывает диалоговое окно сохранения файла
         if not self.ui.textEdit_field_to_text_from_audio.toPlainText():
@@ -1153,129 +1027,63 @@ class DictationAudioDialog(QDialog):
         self.last_save_path = file_name                         # Обновление последнего пути сохранения
 
     def toggle_recording(self):
-        if not self.is_recording:
-            if not self.load_model():
-                return
-            self.ui.textEdit_field_to_text_from_audio.clear()
-            self.vosk_committed_text = ""
-            self.vosk_partial_text = ""
-            self.ui.textEdit_field_to_text_from_audio.setReadOnly(True)
-            self.ui.pushButton_record_start.setIcon(QIcon(self.recording_icon_path))
-            self.ui.lineEdit_way_to_save_file.setEnabled(False)
-            self.ui.pushButton_save_as.setEnabled(False)
-            self.is_recording = True
-            self._clear_after_live_cancel = False
-            self.ui.pushButton_cancel_dictation.setEnabled(True)
-            self.audio_processor = None
-            self.live_chunk_queue = None
-            self.live_capture_done = threading.Event()
-            if self.live_engine in {"whisper", "sherpa"}:
-                # Load the recognizer before opening the capture loop. This avoids an
-                # unconsumed audio backlog while native models initialize.
-                # Both live decoders have a finite ~12 s backlog budget. The Whisper
-                # fallback uses six 2 s windows; T-one uses 120 x 100 ms frames.
-                self.live_chunk_queue = queue_module.Queue(maxsize=120 if self.live_engine == "sherpa" else 6)
-                if self.live_engine == "sherpa":
-                    self.whisper_worker = SherpaDictationWorker(
-                        self.live_chunk_queue, self.sherpa_model_dir,
-                        num_threads=load_settings(_project_root).get("threads", 2), parent=self,
-                        capture_done_event=self.live_capture_done,
-                    )
-                else:
-                    self.whisper_worker = WhisperDictationWorker(
-                        self.live_chunk_queue, self, capture_done_event=self.live_capture_done
-                    )
-                self.whisper_worker.ready.connect(self._start_live_audio_capture)
-                self.whisper_worker.finished.connect(self._on_live_worker_finished)
-                self.whisper_worker.text_updated.connect(self.on_live_dictation_text)
-                if self.live_engine == "sherpa":
-                    self.whisper_worker.text_parts_updated.connect(self.on_live_dictation_parts)
-                self.whisper_worker.status_changed.connect(self.ui.lineEdit_words_to_dict_info.setText)
-                self.whisper_worker.succeeded.connect(self.on_whisper_dictation_succeeded)
-                self.whisper_worker.failed.connect(self.on_whisper_dictation_failed)
-                self.whisper_worker.cancelled.connect(self.on_whisper_dictation_cancelled)
-                self.whisper_worker.start()
-            else:
-                self.listen()
-            self._notify_dictation_busy(True)
-            if self.live_engine == "sherpa":
-                self.ui.lineEdit_words_to_dict_info.setText(
-                    "Подготавливается потоковая диктовка T-one. После загрузки модель будет получать аудио пакетами по 100 мс."
-                )
-            elif self.live_engine == "whisper":
-                self.ui.lineEdit_words_to_dict_info.setText(
-                    "Подготавливается Whisper. После загрузки запись будет распознаваться окнами по 2 секунды."
-                )
-            else:
-                self.ui.lineEdit_words_to_dict_info.setText(
-                    "Идёт потоковая диктовка Vosk. Промежуточная гипотеза обновляется по мере речи."
-                )
-            return
-
-        self.timer.stop()
-        self.ui.pushButton_record_start.setIcon(QIcon(self.record_icon_path))
-        self.ui.lineEdit_way_to_save_file.setEnabled(True)
-        self.ui.pushButton_save_as.setEnabled(True)
-        self.is_recording = False
-        processor = self.audio_processor
-        if processor is not None:
-            processor.stop()
-            processor.wait()
-        elif self.live_engine in {"whisper", "sherpa"} and self.live_capture_done is not None:
-            self.live_capture_done.set()
-        read_error = processor.read_error if processor is not None else None
-        if self.audio_interface is not None:
-            try:
-                self.audio_interface.terminate()
-            except Exception:
-                pass
-            self.audio_interface = None
-        self.stream = None
-
-        if self.live_engine in {"whisper", "sherpa"}:
-            self.ui.lineEdit_words_to_dict_info.setText(
-                "Запись остановлена. Завершаем обработку накопленного аудио…"
-            )
+        if self.is_recording:
+            self.is_recording = False
+            self.timer.stop()
             self.ui.pushButton_record_start.setEnabled(False)
-            self.ui.pushButton_save_as.setEnabled(False)
-            self.ui.pushButton_cancel_dictation.setEnabled(True)
-            # The capture thread signals completion after putting its final remainder
-            # on the queue. Keep busy state until the decoder drains queued frames.
+            self.ui.lineEdit_words_to_dict_info.setText("Завершаем распознавание…")
+            if self.audio_processor is not None:
+                self.audio_processor.stop()
+            elif self.live_capture_done is not None:
+                self.live_capture_done.set()
+            return
+        if self.whisper_worker and self.whisper_worker.isRunning():
+            return
+        if not self.load_model():
+            return
+        self.audio_processor = None
+        self.is_recording = True
+        self.elapsed_time = QTime(0, 0, 0)
+        self.ui.label_time_audio.setText("00:00:00")
+        self.ui.microphone_level.setValue(0)
+        self.ui.textEdit_field_to_text_from_audio.clear()
+        self.ui.textEdit_field_to_text_from_audio.setReadOnly(True)
+        self.ui.pushButton_record_start.setText("Остановить")
+        self.ui.pushButton_record_start.setIcon(QIcon(self.recording_icon_path))
+        self.ui.lineEdit_way_to_save_file.setEnabled(False)
+        self.ui.pushButton_save_as.setEnabled(False)
+        self.ui.pushButton_cancel_dictation.setEnabled(True)
+        self.live_capture_done = threading.Event()
+        self.live_chunk_queue = queue_module.Queue(maxsize=6 if self.live_engine == "whisper" else 120)
+        if self.live_engine == "whisper":
+            worker = WhisperDictationWorker(self.live_chunk_queue, self, capture_done_event=self.live_capture_done)
+            worker.text_updated.connect(self.on_live_dictation_text)
         else:
-            try:
-                if self.recognition is not None:
-                    final_json = json.loads(self.recognition.FinalResult())
-                    final_text = str(final_json.get("text", "") or "").strip()
-                    if final_text:
-                        self._append_vosk_text(final_text)
-            except Exception:
-                logging.getLogger("app.transcription_errors").exception("Vosk final result failed")
-            self.vosk_partial_text = ""
-            self._render_vosk_live_text()
-            self.ui.textEdit_field_to_text_from_audio.setReadOnly(False)
-            if read_error:
-                QMessageBox.warning(self, "Ошибка микрофона", read_error)
-            self.ui.lineEdit_words_to_dict_info.setText("Запись остановлена. Можно начать новую.")
-            self.ui.pushButton_cancel_dictation.setEnabled(False)
-            self._notify_dictation_busy(False)
+            worker = StreamingDictationWorker(
+                self.live_chunk_queue, self.sherpa_model_dir,
+                num_threads=load_settings(_project_root).get("threads", 2), parent=self,
+                capture_done_event=self.live_capture_done, use_vosk_backup=self._vosk_backup,
+                engine=self.live_engine,
+            )
+            worker.text_parts_updated.connect(self.on_live_dictation_parts)
+        self.whisper_worker = worker
+        worker.ready.connect(self._start_live_audio_capture)
+        worker.finished.connect(self._on_live_worker_finished)
+        worker.status_changed.connect(self.ui.lineEdit_words_to_dict_info.setText)
+        worker.succeeded.connect(self.on_whisper_dictation_succeeded)
+        worker.failed.connect(self.on_whisper_dictation_failed)
+        worker.cancelled.connect(self.on_whisper_dictation_cancelled)
+        self.ui.lineEdit_words_to_dict_info.setText("Готовим распознавание…")
+        self._notify_dictation_busy(True)
+        worker.start()
 
     def _start_live_audio_capture(self):
-        """Start microphone capture only after the selected live decoder is ready."""
         if not self.is_recording:
             if self.live_capture_done is not None:
                 self.live_capture_done.set()
             return
+        self.ui.lineEdit_words_to_dict_info.setText("Подключаем выбранный микрофон…")
         self.listen()
-
-    def _close_microphone_resources(self):
-        """Release PortAudio resources after capture has stopped."""
-        if self.audio_interface is not None:
-            try:
-                self.audio_interface.terminate()
-            except Exception:
-                logging.getLogger("app.transcription_errors").exception("Could not terminate microphone interface")
-            self.audio_interface = None
-        self.stream = None
 
     def abort_live_dictation(self, clear_text: bool = False):
         """Force-stop capture/decoding, waiting for both QThreads before releasing state."""
@@ -1310,8 +1118,7 @@ class DictationAudioDialog(QDialog):
 
         if processor is not None and processor.isRunning():
             processor.stop(discard_pending=True)
-            processor.wait(2500)
-        if self.live_capture_done is not None:
+        elif self.live_capture_done is not None:
             self.live_capture_done.set()
 
         # Cancel the decoder after capture was asked to stop. Its worker drains no more
@@ -1345,16 +1152,27 @@ class DictationAudioDialog(QDialog):
 
     def _on_live_capture_finished(self):
         processor = self.sender()
-        if processor is self.audio_processor and not self.is_recording and not self._live_cancel_pending:
-            self.audio_processor = None
-        self._maybe_finish_live_cancellation()
+        if processor is self.audio_processor:
+            self.ui.microphone_level.setValue(0)
+            self.timer.stop()
+        if self._live_cancel_pending:
+            self._maybe_finish_live_cancellation()
+        else:
+            self._enable_record_when_idle()
+
+    def _enable_record_when_idle(self):
+        capture_running = self.audio_processor is not None and self.audio_processor.isRunning()
+        decoder_running = self.whisper_worker is not None and self.whisper_worker.isRunning()
+        if not self.is_recording and not capture_running and not decoder_running:
+            self.ui.pushButton_record_start.setText("Начать запись")
+            self.ui.pushButton_record_start.setEnabled(True)
+            self._notify_dictation_busy(False)
 
     def _finish_live_cancellation(self, preserved_text: str = ""):
         self._live_cancel_pending = False
         self._pending_live_cancel_text = ""
         self.is_recording = False
         self.timer.stop()
-        self._close_microphone_resources()
         worker = self.whisper_worker
         worker_still_running = bool(worker is not None and worker.isRunning())
         processor = self.audio_processor
@@ -1367,6 +1185,7 @@ class DictationAudioDialog(QDialog):
         self.live_capture_done = None
         all_workers_stopped = not (worker_still_running or capture_still_running)
         self.ui.pushButton_record_start.setEnabled(all_workers_stopped)
+        self.ui.pushButton_record_start.setText("Начать запись")
         self.ui.pushButton_record_start.setIcon(QIcon(self.record_icon_path))
         self.ui.pushButton_cancel_dictation.setEnabled(False)
         self.ui.pushButton_save_as.setEnabled(True)
@@ -1387,10 +1206,11 @@ class DictationAudioDialog(QDialog):
         worker = self.sender()
         if worker is self.whisper_worker:
             self.whisper_worker = None
+            worker.deleteLater()
         if self._live_cancel_pending:
             self._maybe_finish_live_cancellation()
-        elif not self.is_recording:
-            self.ui.pushButton_record_start.setEnabled(True)
+        else:
+            self._enable_record_when_idle()
 
     def on_whisper_dictation_cancelled(self, text):
         self._pending_live_cancel_text = str(text or self._pending_live_cancel_text or "")
@@ -1415,81 +1235,65 @@ class DictationAudioDialog(QDialog):
             parts.append("… " + partial)
         vertical = self.ui.textEdit_field_to_text_from_audio.verticalScrollBar()
         was_at_bottom = vertical.value() >= vertical.maximum() - 4
+        if parts and self.is_recording and self.ui.textEdit_field_to_text_from_audio.document().isEmpty():
+            backend = getattr(self.whisper_worker, "backend", "Движок")
+            self.ui.lineEdit_words_to_dict_info.setText(f"{backend} распознаёт речь. Продолжайте говорить.")
         self.ui.textEdit_field_to_text_from_audio.setPlainText("\n\n".join(parts))
         if was_at_bottom:
             vertical.setValue(vertical.maximum())
 
-    def on_whisper_dictation_succeeded(self, text):
+    def _finish_dictation_ui(self):
         self.is_recording = False
         self.timer.stop()
+        self.ui.microphone_level.setValue(0)
         self.ui.pushButton_record_start.setIcon(QIcon(self.record_icon_path))
+        self.ui.pushButton_record_start.setEnabled(False)
         self.ui.lineEdit_way_to_save_file.setEnabled(True)
         self.ui.textEdit_field_to_text_from_audio.setReadOnly(False)
-        capture_error = getattr(self.audio_processor, "read_error", None) if self.audio_processor else None
-        # A decoder can finish because the capture thread hit its backlog limit or a
-        # microphone read error. Close the still-open device so the next take can start.
-        if self.audio_interface is not None:
-            try:
-                if self.stream is not None and self.stream.is_active():
-                    self.stream.stop_stream()
-                if self.stream is not None:
-                    self.stream.close()
-            except Exception:
-                logging.getLogger("app.transcription_errors").exception("Could not close dictation microphone")
-        self._close_microphone_resources()
+        self.ui.pushButton_cancel_dictation.setEnabled(False)
+        self.ui.pushButton_save_as.setEnabled(True)
+        self._enable_record_when_idle()
+
+    def on_whisper_dictation_succeeded(self, text):
+        if self._live_cancel_pending:
+            return
         if text.strip():
             self.ui.textEdit_field_to_text_from_audio.setPlainText(text)
+        processor = self.audio_processor
+        capture_error = processor.read_error if processor else None
+        backend = getattr(self.whisper_worker, "backend", "Whisper")
         if capture_error:
-            self.ui.lineEdit_words_to_dict_info.setText(
-                "Диктовка остановлена: распознаватель не успевал обрабатывать аудио. "
-                "Сохранён текст всех фрагментов, которые удалось обработать."
-            )
-            QMessageBox.warning(self, "Перегрузка потоковой диктовки", capture_error)
-        elif text.strip():
-            engine_label = {"sherpa": "T-one", "whisper": "Whisper", "vosk": "Vosk"}.get(self.live_engine, "Движок")
-            self.ui.lineEdit_words_to_dict_info.setText(
-                f"Готово ({engine_label}). Распознанный текст можно исправить и сохранить."
-            )
+            status = f"Микрофон: {capture_error}"
+        elif self.ui.textEdit_field_to_text_from_audio.toPlainText().strip():
+            status = f"Готово ({backend}). Текст можно исправить и сохранить."
+        elif not processor or processor.peak_rms < 100:
+            status = "Вход почти без сигнала. Проверьте микрофон в параметрах звука Windows."
         else:
-            self.ui.lineEdit_words_to_dict_info.setText(
-                "Распознавание завершено, но речь не обнаружена. Можно начать новую запись."
-            )
-        self.ui.pushButton_record_start.setEnabled(not (self.whisper_worker is not None and self.whisper_worker.isRunning()))
-        self.ui.pushButton_cancel_dictation.setEnabled(False)
-        self.ui.pushButton_save_as.setEnabled(True)
-        self.live_chunk_queue = None
-        self.live_capture_done = None
-        self._notify_dictation_busy(False)
+            status = f"{backend} получил аудио, но не распознал слова. Проверьте вход или выберите «Авто»."
+        self.ui.lineEdit_words_to_dict_info.setText(status)
+        self._finish_dictation_ui()
 
     def on_whisper_dictation_failed(self, message):
-        # A model-load/runtime failure must also stop microphone capture; otherwise the
-        # producer would keep queueing audio without a consumer.
-        if self.is_recording:
-            self.timer.stop()
-            self.is_recording = False
-            processor = self.audio_processor
-            if processor is not None:
-                processor.stop()
-                processor.wait(2500)
-            elif self.live_capture_done is not None:
-                self.live_capture_done.set()
-            self._close_microphone_resources()
-            self.ui.pushButton_record_start.setIcon(QIcon(self.record_icon_path))
-        self.timer.stop()
-        self.ui.textEdit_field_to_text_from_audio.setReadOnly(False)
-        QMessageBox.critical(self, "Ошибка потокового распознавания", message)
-        self.ui.lineEdit_words_to_dict_info.setText("Ошибка потокового распознавания. Уже показанный текст сохранён в поле.")
-        self.ui.pushButton_record_start.setEnabled(not (self.whisper_worker is not None and self.whisper_worker.isRunning()))
-        self.ui.pushButton_cancel_dictation.setEnabled(False)
-        self.ui.pushButton_save_as.setEnabled(True)
-        self.live_chunk_queue = None
-        self.live_capture_done = None
-        self._notify_dictation_busy(False)
+        if self.audio_processor is not None:
+            self.audio_processor.stop(discard_pending=True)
+        if self._live_cancel_pending:
+            return
+        self.ui.lineEdit_words_to_dict_info.setText(f"Ошибка распознавания: {message}")
+        self._finish_dictation_ui()
 
-    def update_timer(self):                                  # Обновление таймера по надиктовке
+    def update_timer(self):
         self.elapsed_time = self.elapsed_time.addSecs(1)
         self.ui.label_time_audio.setText(self.elapsed_time.toString("hh:mm:ss"))
-
+        seconds = self.elapsed_time.msecsSinceStartOfDay() // 1000
+        processor = self.audio_processor
+        if processor is not None and not self.ui.textEdit_field_to_text_from_audio.toPlainText():
+            if seconds == 3 and processor.peak_rms < 100:
+                self.ui.lineEdit_words_to_dict_info.setText(
+                    "Вход почти без сигнала. Проверьте микрофон в параметрах звука Windows."
+                )
+            elif seconds in (7, 15) and processor.peak_rms >= 100:
+                backend = getattr(self.whisper_worker, "backend", "Whisper")
+                self.ui.lineEdit_words_to_dict_info.setText(f"Звук поступает. {backend} пока не распознал слова.")
 
     def show_context_menu(self, position):           # Отображение диалогового окна о прекращении записи
         if self.ui.label_time_audio.text() != "00:00:00" and not self.timer.isActive():
@@ -1526,7 +1330,7 @@ class DictationAudioDialog(QDialog):
         self.ui.lineEdit_way_to_save_file.setEnabled(True)
         self.ui.pushButton_save_as.setEnabled(True)
         self.ui.textEdit_field_to_text_from_audio.clear()
-        self.ui.lineEdit_words_to_dict_info.setText("   Для начала записи нажмите на кнопку справа")
+        self.ui.lineEdit_words_to_dict_info.setText("Выберите микрофон и нажмите «Начать запись».")
 
     def back_to_main(self):
         self.main_window.show_home_tab()
@@ -1607,7 +1411,8 @@ class MainWindow(QMainWindow):
         self.speech_page = None
         self._closing = False
         try:
-            self._drafts = json.loads((get_user_data_root(_project_root) / 'data/last-session.json').read_text(encoding='utf-8'))
+            from document_storage import read_text
+            self._drafts = json.loads(read_text(history_data_dir(_project_root) / 'last-session.json'))
         except (OSError, ValueError):
             self._drafts = {}
 
@@ -1699,18 +1504,18 @@ class MainWindow(QMainWindow):
 
     def show_queue_tab(self):
         page = self._ensure_queue_page()
+        page._populate_file_model_choices()
         self.tabs.setCurrentWidget(page)
         self.statusBar().showMessage("Очередь обработки")
 
     def open_audio_file_to_text_window(self):
         # The file action opens a non-modal queue page; the user may add more files while it runs.
-        page = self._ensure_queue_page()
-        self.tabs.setCurrentWidget(page)
-        self.statusBar().showMessage("Очередь обработки")
-        QTimer.singleShot(80, page.add_files_dialog)
+        self.show_queue_tab()
 
     def open_dictation_audio_dialog(self):
-        self.tabs.setCurrentWidget(self._ensure_dictation_page())
+        page = self._ensure_dictation_page()
+        self.tabs.setCurrentWidget(page)
+        page.refresh_microphones()
 
     def open_settings(self):
         page = self._ensure_settings_page()
@@ -1791,6 +1596,14 @@ if __name__ == "__main__":
             pass
     app_icon = QIcon(str(_project_root / "Spiker.ico"))
     app.setWindowIcon(app_icon)
+    from PySide6.QtCore import QLockFile
+    data_root = get_user_data_root(_project_root)
+    (data_root / "data").mkdir(parents=True, exist_ok=True)
+    profile_lock = QLockFile(str(data_root / "data" / "application.lock"))
+    profile_lock.setStaleLockTime(0)
+    if not profile_lock.tryLock(0):
+        QMessageBox.information(None, "СПИКЕР уже открыт", "Откройте запущенный СПИКЕР на панели задач Windows.")
+        sys.exit(0)
     window = MainWindow()
     window.setWindowIcon(app_icon)
     _fit_main_window_to_available_screen(app, window)

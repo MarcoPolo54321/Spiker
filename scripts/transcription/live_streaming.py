@@ -6,11 +6,13 @@ interim hypotheses, and commits utterances when endpoint detection fires.
 """
 from __future__ import annotations
 
+import json
 import logging
+from collections import deque
+from itertools import chain
 from pathlib import Path
 
-from model_paths import native_model_path
-from app_paths import get_user_data_root
+from model_paths import model_roots, native_model_path
 
 LOGGER = logging.getLogger("processing.live_dictation")
 DEFAULT_MODEL_DIR = "sherpa-onnx-streaming-t-one-russian-2025-09-08"
@@ -22,20 +24,9 @@ MODEL_URL = (
 
 def resolve_t_one_model(project_root: Path, configured_path: str = "") -> Path | None:
     """Find a previously downloaded T-one model without performing network access."""
-    root = Path(project_root)
-    user_models = get_user_data_root(root) / "models"
-    candidates: list[Path] = []
-    if configured_path:
-        configured = Path(configured_path).expanduser()
-        candidates.append(configured)
-    candidates.extend([
-        root / "models" / "sherpa-onnx" / DEFAULT_MODEL_DIR,
-        root / "models" / "live" / DEFAULT_MODEL_DIR,
-        root / "models" / DEFAULT_MODEL_DIR,
-        user_models / "sherpa-onnx" / DEFAULT_MODEL_DIR,
-        user_models / "live" / DEFAULT_MODEL_DIR,
-        user_models / DEFAULT_MODEL_DIR,
-    ])
+    named = (folder / prefix / DEFAULT_MODEL_DIR for folder in model_roots(project_root)
+             for prefix in ("sherpa-onnx", "live", ""))
+    candidates = chain((next(named),), (Path(configured_path).expanduser(),) if configured_path else (), named)
     for candidate in candidates:
         try:
             candidate = candidate.resolve()
@@ -45,7 +36,7 @@ def resolve_t_one_model(project_root: Path, configured_path: str = "") -> Path |
                 return candidate
         except OSError:
             continue
-    for search_root in (user_models, root / "models"):
+    for search_root in model_roots(project_root):
         if not search_root.is_dir():
             continue
         try:
@@ -144,7 +135,7 @@ class SherpaStreamingSession:
         if getter is None:
             raise RuntimeError("В sherpa-onnx отсутствует метод получения результата распознавания.")
         result = getter(self.stream)
-        return str(getattr(result, "text", "") or "").strip()
+        return str(result if isinstance(result, str) else getattr(result, "text", "") or "").strip()
 
     @staticmethod
     def _join(parts: list[str], partial: str = "") -> str:
@@ -189,6 +180,100 @@ class SherpaStreamingSession:
             self.committed.append(self.last_partial)
         self.last_partial = ""
         return self._join(self.committed)
+
+
+class VoskStreamingSession:
+    def __init__(self, recognizer):
+        self.recognizer = recognizer
+        self.committed_text = ""
+        self.partial_text = ""
+
+    def feed_pcm16(self, pcm):
+        endpoint = self.recognizer.AcceptWaveform(pcm)
+        if endpoint:
+            text = json.loads(self.recognizer.Result()).get("text", "")
+            self.committed_text = " ".join(filter(None, (self.committed_text, text)))
+            self.partial_text = ""
+        else:
+            self.partial_text = json.loads(self.recognizer.PartialResult()).get("partial", "")
+        return " ".join(filter(None, (self.committed_text, self.partial_text))), endpoint
+
+    def finish(self):
+        tail = json.loads(self.recognizer.FinalResult()).get("text", "")
+        return " ".join(filter(None, (self.committed_text, tail or self.partial_text)))
+
+
+class AutoDictationSession:
+    """Replay the first utterance into Vosk if T-one does not produce any words."""
+    def __init__(self, primary, fallback=None, notify=None):
+        self._fallback = fallback
+        self._notify = notify or (lambda reason: None)
+        self._recent = deque(maxlen=100)  # ten seconds of PCM, only in RAM
+        self._voiced = 0
+        self._samples = 0
+        self._recognized = False
+        try:
+            self._session = primary()
+        except Exception:
+            if fallback is None:
+                raise
+            LOGGER.exception("T-one initialization failed; using the installed Vosk backup")
+            self._switch("T-one не запустился. Слушаю через Vosk.")
+
+    @property
+    def committed_text(self):
+        return self._session.committed_text
+
+    @property
+    def partial_text(self):
+        return self._session.partial_text
+
+    def _switch(self, reason):
+        factory, self._fallback = self._fallback, None
+        if factory is None:
+            return "", False
+        self._session = factory()
+        self._notify(reason)
+        result = ("", False)
+        for pcm in self._recent:
+            result = self._session.feed_pcm16(pcm)
+        self._recent.clear()
+        return result
+
+    def feed_pcm16(self, pcm):
+        if self._fallback:
+            import audioop
+            self._recent.append(pcm)
+            self._samples += len(pcm) // 2
+            if len(pcm) >= 2 and audioop.rms(pcm, 2) >= 100:
+                self._voiced += len(pcm) // 2
+        try:
+            result = self._session.feed_pcm16(pcm)
+        except Exception:
+            if self._fallback is None:
+                raise
+            LOGGER.exception("T-one decoding failed before returning text")
+            return self._switch("T-one прервался. Слушаю через Vosk.")
+        if result[0].strip():
+            self._recognized = True
+            self._fallback = None
+            self._recent.clear()
+        elif self._fallback and self._samples >= 4 * 16000 and self._voiced >= 16000:
+            return self._switch("Сигнал есть, но T-one не распознал речь. Слушаю через Vosk.")
+        return result
+
+    def finish(self):
+        try:
+            result = self._session.finish()
+        except Exception:
+            if self._fallback is None:
+                raise
+            self._switch("Не удалось завершить работу T-one. Проверяю запись через Vosk.")
+            return self._session.finish()
+        if not result.strip() and self._fallback and not self._recognized and self._voiced >= 4800:
+            self._switch("Проверяю короткую запись через Vosk.")
+            return self._session.finish()
+        return result
 
 
 def merge_live_text(committed: str, partial: str) -> str:

@@ -1,13 +1,13 @@
 """Optional local faster-whisper backend. Models must already exist on disk."""
 from __future__ import annotations
 
+from itertools import chain
 import logging
 import threading
 from pathlib import Path
 from typing import Callable
 
-from model_paths import native_model_path
-from app_paths import get_user_data_root
+from model_paths import model_roots, native_model_path
 from .hardware_diagnostics import resolve_compute_options
 
 LOGGER = logging.getLogger("processing.faster_whisper")
@@ -45,17 +45,14 @@ def is_faster_whisper_available() -> bool:
 
 
 def resolve_faster_model(project_root: Path, model_name: str, configured_path: str = "") -> Path | None:
-    candidates = []
-    if configured_path:
-        candidates.append(Path(configured_path).expanduser())
-    candidates.extend([
-        Path(project_root) / "models" / "faster-whisper" / str(model_name),
-        get_user_data_root(project_root) / "models" / "faster-whisper" / str(model_name),
-    ])
+    named = (root / "faster-whisper" / str(model_name) for root in model_roots(project_root, legacy_pack=True))
+    # Prefer the named model shipped beside the executable; a custom path can
+    # still fill a missing model before searching legacy locations.
+    candidates = chain((next(named),), (Path(configured_path).expanduser(),) if configured_path else (), named)
     for candidate in candidates:
         try:
             resolved = candidate.resolve()
-            if resolved.is_dir() and (resolved / "config.json").is_file():
+            if resolved.is_dir() and all((resolved / name).is_file() for name in ("config.json", "model.bin", "tokenizer.json")):
                 return resolved
         except OSError:
             continue

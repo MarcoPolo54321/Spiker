@@ -45,6 +45,7 @@ models/sherpa-onnx/
 models/tts/
 models/**/*.bin
 models/**/*.gguf
+models/**/*.part
 models/**/*.onnx
 models/**/*.pt
 models/**/*.pth

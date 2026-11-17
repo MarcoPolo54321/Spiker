@@ -60,31 +60,24 @@ exit /b 1
 
 :packaged
 set "SPK_APP_ROOT=%~dp0"
-if exist "%SPK_APP_ROOT%portable.flag" (
-  set "SPK_DATA_ROOT=%SPK_APP_ROOT%user-data"
-) else (
-  set "SPK_DATA_ROOT=%LOCALAPPDATA%\Spiker"
-)
-if not exist "%SPK_DATA_ROOT%" mkdir "%SPK_DATA_ROOT%"
-set "SPIKER_DATA_DIR=%SPK_DATA_ROOT%"
-set "SPK_PYTHON=%SPK_DATA_ROOT%\.venv-models\Scripts\python.exe"
+set "SPK_PYTHON=%SPK_APP_ROOT%runtime\model-tools\Scripts\python.exe"
 if not exist "%SPK_PYTHON%" (
-  echo Создаём дополнительное окружение в папке пользовательских данных...
+  echo Создаём дополнительное окружение рядом с программой...
   where py >nul 2>&1
   if errorlevel 1 goto :python_missing
-  py -3.11 -m venv "%SPK_DATA_ROOT%\.venv-models"
+  py -3.11 -m venv "%SPK_APP_ROOT%runtime\model-tools"
   if errorlevel 1 goto :failed
 )
 "%SPK_PYTHON%" -m pip install --disable-pip-version-check -r "%SPK_APP_ROOT%res\requirements.txt"
 if errorlevel 1 goto :failed
 echo.
 echo Выберите установку дополнительных моделей: faster-whisper, T-one и Vosk.
-echo Файлы будут размещены в пользовательской папке данных СПИКЕР.
+echo Модели будут размещены рядом с программой.
 "%SPK_PYTHON%" "%SPK_APP_ROOT%scripts\install_models.py" --basic
 if errorlevel 1 goto :failed
 echo.
 echo.
-echo Дополнительные компоненты установлены в "%SPK_DATA_ROOT%\models".
+echo Дополнительные компоненты установлены в "%SPK_APP_ROOT%models".
 echo Для автоматического разделения на спикеров запустите Install_Speaker_Diarization.bat.
 pause
 exit /b 0

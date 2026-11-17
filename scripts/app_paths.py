@@ -59,12 +59,26 @@ def get_user_data_root(app_root: str | Path | None = None) -> Path:
     marker = destination / '.storage-v2'
     root = Path(app_root).resolve() if app_root else get_app_root()
     local = Path(os.environ.get('LOCALAPPDATA', str(Path.home() / 'AppData/Local'))) / 'Spiker'
-    # Retry every startup until each legacy item has arrived. Copy only missing files,
-    # so this remains safe if Documents is temporarily unavailable during migration.
-    for source in (local, root / 'user-data', root):
-        if source.resolve() != destination.resolve():
-            for name in ('data', 'results', 'logs'):
-                _copy_missing_files(source / name, destination / name)
     if not marker.exists():
+        for source in (local, root / 'user-data', root):
+            if source.resolve() != destination.resolve():
+                for name in ('data', 'results', 'logs'):
+                    _copy_missing_files(source / name, destination / name)
         marker.write_text('User data lives in Documents/Spiker.\n', encoding='utf-8')
     return destination
+
+
+def _has_old_protected_history(root: Path) -> bool:
+    data = root / "data"
+    return (data / "vault.json").is_file() or (data / "queue.secure").is_file() or (data / "current").is_dir()
+
+
+def history_data_dir(app_root=None) -> Path:
+    """Keep ordinary session files apart from abandoned test history on upgrades."""
+    root = get_user_data_root(app_root)
+    return root / "data" / "current" if _has_old_protected_history(root) else root / "data"
+
+
+def history_results_dir(app_root=None) -> Path:
+    root = get_user_data_root(app_root)
+    return root / "results" / "current" if _has_old_protected_history(root) else root / "results"

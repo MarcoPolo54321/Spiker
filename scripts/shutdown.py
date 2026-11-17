@@ -4,8 +4,8 @@ import os
 import time
 from PySide6.QtCore import QThread, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
-from app_config import atomic_write_json
-from app_paths import get_user_data_root
+from document_storage import write_json
+from app_paths import history_data_dir
 
 def begin_shutdown(window, event, root):
     event.ignore()
@@ -25,7 +25,7 @@ def begin_shutdown(window, event, root):
         drafts['speech'] = window.speech_page.editor.toPlainText()
     try:
         if drafts:
-            atomic_write_json(get_user_data_root(root) / 'data/last-session.json', drafts)
+            write_json(history_data_dir(root) / 'last-session.json', drafts)
         if window.queue_page:
             window.queue_page.prepare_for_shutdown(timeout_ms=0)
     except Exception as exc:
@@ -37,9 +37,9 @@ def begin_shutdown(window, event, root):
         page.is_recording = False
         page.timer.stop()
         if page.audio_processor:
-            page.audio_processor.is_recording = False
-            page.audio_processor.discard_pending = True
-        if page.live_capture_done: page.live_capture_done.set()
+            page.audio_processor.stop(discard_pending=True)
+        elif page.live_capture_done:
+            page.live_capture_done.set()
     if window.ai_page: window.ai_page.prepare_for_shutdown(timeout_ms=0)
     if window.speech_page: window.speech_page.prepare_for_shutdown(timeout_ms=0)
     threads = list(window.findChildren(QThread))

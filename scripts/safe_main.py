@@ -9,6 +9,8 @@ from pathlib import Path
 ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
+if not getattr(sys, "frozen", False):
+    import pyi_windows_version  # noqa: F401 — same startup policy as the bundled runtime hook
 from app_paths import get_user_data_root
 
 USER_DATA_ROOT = get_user_data_root(ROOT)
@@ -51,7 +53,8 @@ def _packaging_smoke_test() -> None:
     # Initialize Qt before other native audio libraries. Some of those ship
     # Microsoft runtime DLLs of their own; loading them first can make Windows
     # bind Qt to an older already-loaded runtime in the frozen process.
-    from PySide6.QtWidgets import QApplication, QDialog, QMainWindow
+    from PySide6.QtCore import QEvent, QObject
+    from PySide6.QtWidgets import QApplication, QDialog, QMainWindow, QWidget
     from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
     import imageio_ffmpeg
     import pyaudio
@@ -64,6 +67,7 @@ def _packaging_smoke_test() -> None:
     from UI.Main_menu_script import Ui_MainWindow
     from UI.Settings_page import SettingsPage  # noqa: F401
     from transcription.audio_preparation import prepare_media_audio  # noqa: F401
+    from transcription.qt_microphone import capture_devices  # noqa: F401
     from transcription.wav_to_text import find_whisper_model  # noqa: F401
 
     required_assets = (
@@ -147,10 +151,53 @@ def _packaging_smoke_test() -> None:
     Ui_MainWindow().setupUi(main_window)
     help_dialog = QDialog()
     Ui_Dialog_info().setupUi(help_dialog)
+    gui = runpy.run_path(str(SCRIPTS / "main.py"), run_name="packaged_smoke")
+    window = gui["MainWindow"]()
+    window.resize(1200, 740)
+    window.show()
+    app.processEvents()
+    extra_windows = []
+
+    class QueueEntryObserver(QObject):
+        def eventFilter(self, widget, event):
+            if (event.type() == QEvent.Type.Show and isinstance(widget, QWidget)
+                    and widget.isWindow() and widget is not window):
+                extra_windows.append(type(widget).__name__)
+            return False
+
+    observer = QueueEntryObserver()
+    app.installEventFilter(observer)
+    try:
+        window.ui.pushButton_choose_file.click()
+        app.processEvents()
+        if window.tabs.currentWidget() is not window.queue_page or extra_windows:
+            raise RuntimeError(f"Queue entry did not stay in one window: {extra_windows}")
+    finally:
+        app.removeEventFilter(observer)
+
+    for name in ("open_settings", "open_dictation_audio_dialog",
+                 "open_ai_processing", "open_speech", "open_info_menu", "open_user_guide"):
+        getattr(window, name)()
+        app.processEvents()
+    if "--dictation-fixture" in sys.argv:
+        from transcription.dictation_smoke import verify_dictation_fixture
+        pos = sys.argv.index("--dictation-fixture")
+        window.open_dictation_audio_dialog()
+        verify_dictation_fixture(app, window.dictation_page, Path(sys.argv[pos + 1]), sys.argv[pos + 2])
     main_window.close()
     help_dialog.close()
     app.quit()
 
+
+if "--install-model-bundle" in sys.argv:
+    try:
+        from model_bundle import install_verified_bundle
+        archive, destination, digest = sys.argv[sys.argv.index("--install-model-bundle") + 1:]
+        install_verified_bundle(Path(archive), Path(destination), digest)
+    except Exception:
+        logger.exception("Model bundle installation failed")
+        raise SystemExit(18)
+    raise SystemExit(0)
 
 if "--smoke-test" in sys.argv:
     try:

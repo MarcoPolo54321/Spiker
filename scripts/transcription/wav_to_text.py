@@ -16,6 +16,7 @@ from vosk import KaldiRecognizer, Model
 
 PROJECT_ROOT = (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2])
 from app_paths import get_user_data_root
+from dictation_models import available_whisper_models, is_whisper_model
 USER_DATA_ROOT = get_user_data_root(PROJECT_ROOT)
 _VOSK_PREFERRED = PROJECT_ROOT / "models" / "vosk" / "vosk-model-small-ru-0.22"
 _VOSK_LEGACY = PROJECT_ROOT / "model" / "vosk-model-small-ru-0.22"
@@ -27,10 +28,6 @@ except Exception:
     VOSK_MODEL_PATH = _VOSK_PREFERRED if _VOSK_PREFERRED.exists() or not _VOSK_LEGACY.exists() else _VOSK_LEGACY
     from model_paths import native_model_path
 WHISPER_MODEL_CANDIDATES = (
-    USER_DATA_ROOT / "models" / "whisper" / "ggml-small.bin",
-    USER_DATA_ROOT / "models" / "whisper" / "ggml-base.bin",
-    USER_DATA_ROOT / "models" / "whisper" / "ggml-tiny.bin",
-    USER_DATA_ROOT / "models" / "whisper" / "ggml-medium.bin",
     PROJECT_ROOT / "models" / "whisper" / "ggml-small.bin",
     PROJECT_ROOT / "models" / "whisper" / "ggml-base.bin",
     PROJECT_ROOT / "models" / "whisper" / "ggml-tiny.bin",
@@ -41,6 +38,10 @@ WHISPER_MODEL_CANDIDATES = (
     PROJECT_ROOT / "models" / "ggml-medium.bin",
     PROJECT_ROOT / "ggml-small.bin",
     PROJECT_ROOT / "ggml-medium.bin",
+    USER_DATA_ROOT / "models" / "whisper" / "ggml-small.bin",
+    USER_DATA_ROOT / "models" / "whisper" / "ggml-base.bin",
+    USER_DATA_ROOT / "models" / "whisper" / "ggml-tiny.bin",
+    USER_DATA_ROOT / "models" / "whisper" / "ggml-medium.bin",
 )
 WHISPER_MODEL_CONFIG = USER_DATA_ROOT / "data" / "model_paths" / "whisper_model.txt"
 _LEGACY_WHISPER_MODEL_CONFIG = PROJECT_ROOT / "models" / "whisper" / "model_path.txt"
@@ -63,10 +64,10 @@ def set_whisper_model_path(model_path: str | Path) -> Path:
     path = Path(model_path).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"Файл модели не найден: {path}")
-    if path.stat().st_size < 10 * 1024 * 1024:
+    if not is_whisper_model(path):
         raise ValueError(
-            f"Выбранный файл слишком маленький для модели Whisper: {path}\n"
-            "Проверьте, что это настоящая модель Whisper, а не архив или HTML-страница."
+            f"Нужна совместимая GGML-модель Whisper.cpp (.bin): {path}\n"
+            "Модель faster-whisper или GGUF выбирается в другом разделе."
         )
     WHISPER_MODEL_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     previous = ""
@@ -102,21 +103,7 @@ def find_whisper_model() -> Path | None:
     candidates.extend(WHISPER_MODEL_CANDIDATES)
     # Discover additional Whisper models under ./models without downloading anything.
     models_roots = (USER_DATA_ROOT / "models", PROJECT_ROOT / "models")
-    for models_root in models_roots:
-        if not models_root.is_dir():
-            continue
-        try:
-            candidates.extend(sorted(
-                (item for item in models_root.rglob("*.bin")
-                 if item.is_file() and "faster-whisper" not in {part.lower() for part in item.parts}),
-                key=lambda item: (
-                    0 if any(tag in item.name.lower() for tag in ("tiny", "base", "small")) else
-                    1 if "medium" in item.name.lower() else 2,
-                    item.name.lower(),
-                ),
-            ))
-        except OSError:
-            pass
+    candidates.extend(available_whisper_models(*models_roots))
 
     checked = set()
     for candidate in candidates:
@@ -125,10 +112,7 @@ def find_whisper_model() -> Path | None:
             if candidate in checked:
                 continue
             checked.add(candidate)
-            if candidate.is_file():
-                if candidate.stat().st_size < 10 * 1024 * 1024:
-                    LOGGER.warning("Ignoring suspiciously small Whisper model candidate: %s", candidate)
-                    continue
+            if is_whisper_model(candidate):
                 return candidate
         except OSError:
             continue
@@ -149,7 +133,7 @@ def preload_whisper_model(
             "Библиотека pywhispercpp не установлена. Запустите Launch_Spiker.bat и проверьте logs\\install.log."
         ) from exc
     path = Path(model_path).expanduser().resolve()
-    if not path.is_file() or path.stat().st_size < 10 * 1024 * 1024:
+    if not is_whisper_model(path):
         raise FileNotFoundError(f"Локальная модель Whisper не найдена или повреждена: {path}")
     default_threads = max(1, min((os.cpu_count() or 4) - 1, 4))
     threads = max(1, min(int(n_threads or default_threads), os.cpu_count() or 64))
@@ -210,7 +194,7 @@ def transcribe_with_whisper(
     model_path = Path(model_path).expanduser().resolve()
     if not source.is_file():
         raise FileNotFoundError(f"Подготовленный WAV-файл не найден: {source}")
-    if not model_path.is_file() or model_path.stat().st_size < 10 * 1024 * 1024:
+    if not is_whisper_model(model_path):
         raise FileNotFoundError(f"Локальная модель Whisper не найдена или повреждена: {model_path}")
 
     started = time.perf_counter()

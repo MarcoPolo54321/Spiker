@@ -21,6 +21,7 @@ def extend_optional_runtime_paths(app_root: str | Path) -> list[Path]:
     root = Path(app_root).resolve()
     user_data = get_user_data_root(root)
     candidates = [
+        root / "runtime" / "model-tools" / "Lib" / "site-packages",
         root / ".venv311" / "Lib" / "site-packages",
         root / ".runtime_ml" / "Lib" / "site-packages",
         root / "runtime_ml" / "Lib" / "site-packages",

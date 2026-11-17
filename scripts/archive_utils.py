@@ -13,6 +13,7 @@ def safe_extract_zip(
     *,
     allowed_top_level: set[str] | None = None,
     max_total_bytes: int = 16 * 1024**3,
+    reuse_file=None,
 ) -> None:
     """Extract only normal files and directories, with cross-platform path checks."""
     root = Path(destination).resolve()
@@ -61,6 +62,8 @@ def safe_extract_zip(
             target.mkdir(parents=True, exist_ok=True)
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
+        if reuse_file is not None and reuse_file(info, target):
+            continue
         copied = 0
         with archive.open(info, "r") as source, target.open("wb") as output:
             while chunk := source.read(1024 * 1024):

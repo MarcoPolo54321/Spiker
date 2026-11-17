@@ -34,18 +34,12 @@ pause
 exit /b 0
 :packaged
 set "SPK_APP_ROOT=%~dp0"
-if exist "%SPK_APP_ROOT%portable.flag" (
-  set "SPK_DATA_ROOT=%SPK_APP_ROOT%user-data"
-) else (
-  set "SPK_DATA_ROOT=%LOCALAPPDATA%\Spiker"
-)
-if not exist "%SPK_DATA_ROOT%" mkdir "%SPK_DATA_ROOT%"
-set "SPK_PYTHON=%SPK_DATA_ROOT%\.venv-diarization\Scripts\python.exe"
+set "SPK_PYTHON=%SPK_APP_ROOT%runtime\pyannote-venv\Scripts\python.exe"
 if not exist "%SPK_PYTHON%" (
   echo Создаём отдельное окружение для диаризации. Нужен Python 3.11 x64.
   where py >nul 2>&1
   if errorlevel 1 goto :python_missing
-  py -3.11 -m venv "%SPK_DATA_ROOT%\.venv-diarization"
+  py -3.11 -m venv "%SPK_APP_ROOT%runtime\pyannote-venv"
   if errorlevel 1 goto :failed
 )
 "%SPK_PYTHON%" -c "import sys, platform; raise SystemExit(0 if sys.version_info[:2] == (3, 11) and platform.machine().lower() in ('amd64','x86_64') else 2)"
@@ -61,7 +55,7 @@ if not exist "%~dp0scripts\diarization_worker.py" (
   echo Не найден scripts\diarization_worker.py. Переустановите СПИКЕР из полного установщика.
   goto :failed
 )
-"%SPK_PYTHON%" "%~dp0scripts\diarization_worker.py" --install-model "%SPK_DATA_ROOT%"
+"%SPK_PYTHON%" "%~dp0scripts\diarization_worker.py" --install-model "%CD%"
 if errorlevel 1 goto :failed
 echo.
 echo Диаризация установлена. Перезапустите СПИКЕР и нажмите «Авто-спикеры».

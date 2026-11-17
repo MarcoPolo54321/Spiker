@@ -21,13 +21,15 @@ LOGGER = logging.getLogger("processing.diarization")
 DEFAULT_MODEL_DIR_NAME = "speaker-diarization-community-1"
 MIN_ASSIGNMENT_COVERAGE = 0.25
 from app_paths import get_user_data_root
+from model_paths import model_roots
 
 
 def diarization_model_path(project_root: Path) -> Path:
-    root = Path(project_root)
-    user_model = get_user_data_root(root) / "models" / "pyannote" / DEFAULT_MODEL_DIR_NAME
-    legacy_model = root / "models" / "pyannote" / DEFAULT_MODEL_DIR_NAME
-    return legacy_model if legacy_model.is_dir() and not user_model.exists() else user_model
+    candidates = (folder / "pyannote" / DEFAULT_MODEL_DIR_NAME for folder in model_roots(project_root))
+    local = next(candidates)
+    if is_diarization_model_complete(local):
+        return local
+    return next((path for path in candidates if is_diarization_model_complete(path)), local)
 
 
 def is_diarization_model_complete(model_dir: Path) -> bool:
@@ -46,11 +48,11 @@ def _external_runtime(project_root: Path | None) -> tuple[Path, Path] | None:
     if project_root is None:
         return None
     root = Path(project_root)
-    python = get_user_data_root(root) / ".venv-diarization" / "Scripts" / "python.exe"
-    legacy_python = root / ".venv-diarization" / "Scripts" / "python.exe"
+    preferred = root / "runtime" / "pyannote-venv" / "Scripts" / "python.exe"
+    python = next((base / ".venv-diarization" / "Scripts" / "python.exe"
+                   for base in (root, get_user_data_root(root))
+                   if (base / ".venv-diarization" / "Scripts" / "python.exe").is_file()), preferred) if not preferred.is_file() else preferred
     helper = root / "scripts" / "diarization_worker.py"
-    if not python.is_file() and legacy_python.is_file():
-        python = legacy_python
     if python.is_file() and helper.is_file():
         return python, helper
     return None

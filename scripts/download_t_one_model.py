@@ -10,7 +10,7 @@ from pathlib import Path
 
 from archive_utils import safe_extract_tar
 from transcription.live_streaming import DEFAULT_MODEL_DIR, MODEL_URL
-from app_paths import get_user_data_root
+from model_paths import local_models_dir
 from install_models import _download
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -39,7 +39,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target-root", type=Path, help="Explicit model destination (used by release builds).")
     args = parser.parse_args()
-    target_root = args.target_root or (get_user_data_root(root) / "models" / "sherpa-onnx")
+    target_root = args.target_root or (local_models_dir(root) / "sherpa-onnx")
     target_root = target_root.expanduser().resolve()
     target = target_root / DEFAULT_MODEL_DIR
     model_file = target / "model.onnx"

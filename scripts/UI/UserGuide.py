@@ -2,257 +2,189 @@
 """Practical in-app user guide for Spiker."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import (
-    QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTabWidget,
-    QTextBrowser, QWidget, QFrame,
-)
+from PySide6.QtCore import Qt, QEvent, QTimer
+from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QWidget, QFrame, QScrollArea, QStackedWidget
 
+from app_paths import get_app_root
+from UI.Main_menu_script import LiquidGlassCard, IconGlass
 from UI.theme import apply_window_theme
 
+GUIDE_VIDEOS = {
+    'Начало работы': (('Первые шаги', 'start.mp4'),),
+    'Диктовка': (('Проверка микрофона', 'dictation.mp4'),),
+    'Файлы и участники': (('Распознавание и плеер', 'queue.mp4'), ('Имена и правка реплик', 'speakers.mp4')),
+    'Обработка ИИ': (('Отчёт о беседе', 'ai.mp4'),),
+    'Озвучка': (('Подготовка дикции и экспорт', 'speech.mp4'),),
+    'Модели': (('Проверка компьютера', 'models.mp4'),),
+}
 
 GUIDE_PAGES = [
-    (
-        "Начало работы",
-        """
-        <h2>СПИКЕР — локальная работа с речью</h2>
-        <p>СПИКЕР помогает пройти весь путь: продиктовать текст, расшифровать аудио или видео, обработать результат ИИ и озвучить готовый текст.</p>
-        <h3>С чего начать</h3>
-        <ol>
-          <li><b>Для коротких заметок</b> откройте «Диктовать», выберите доступный потоковый движок и говорите в микрофон.</li>
-          <li><b>Для записей встреч</b> откройте «Загрузить файл», добавьте один или несколько файлов и запустите очередь.</li>
-          <li><b>После распознавания</b> проверьте текст, при необходимости исправьте участников и экспортируйте результат.</li>
-          <li><b>ИИ-обработка</b> необязательна. Её можно открыть прямо после диктовки или расшифровки.</li>
-        </ol>
-        <p>Распознавание речи и потоковая диктовка выполняются локально при наличии соответствующих моделей. ИИ-провайдер может быть локальным или внешним API — проверьте настройки перед отправкой текста.</p>
-        <h3>Различайте модели</h3>
-        <p>Модель распознавания речи превращает звук в текст. Модель диаризации распределяет реплики между голосами. Языковая модель ИИ анализирует уже готовый текст. Это разные компоненты, они не заменяют друг друга. Для первичной настройки запустите <code>Install_Models.bat</code> или используйте кнопку установки моделей в настройках.</p>
-        """,
-    ),
-    (
-        "Диктовка",
-        """
-        <h2>Диктовка с микрофона</h2>
-        <p>Откройте карточку «Диктовать». Перед началом приложение подготавливает выбранную потоковую модель и только после этого начинает захват звука. Кнопка «Обработать с ИИ» передаёт готовый текст в ИИ-раздел без копирования.</p>
-        <h3>Установка моделей</h3>
-        <p>При первом запуске <code>Launch_Spiker.bat</code> проверяет базовые модели и предлагает их установить. Также мастер можно запустить вручную кнопкой «Установить / восстановить модели» в настройках. Он загружает Whisper.cpp Small, faster-whisper Small, русскую T-one и Vosk в соответствующие подпапки <code>models</code>. Для полного базового набора потребуется около 1,2 ГБ свободного места и интернет.</p>
-        <h3>Движки</h3>
-        <ul>
-          <li><b>Авто</b> — выбирает установленный потоковый Sherpa-ONNX / T-one, затем Vosk, а при их отсутствии использует Whisper по коротким окнам. При переходе на Whisper задержка может быть заметно больше.</li>
-          <li><b>Sherpa-ONNX / T-one</b> — основной кандидат для минимальной задержки на русском языке. Модель и библиотеку нужно установить отдельно через <code>Install_Models.bat</code>.</li>
-          <li><b>Vosk</b> — потоковый резервный движок. Нужна полная локальная модель Vosk.</li>
-          <li><b>Whisper</b> — совместимый резервный режим. Он распознаёт короткие накопленные окна и обычно уступает потоковым движкам по задержке.</li>
-        </ul>
-        <h3>Как читать поле текста</h3>
-        <p>Промежуточная гипотеза может меняться, пока модель слышит продолжение фразы. Зафиксированный текст остаётся неизменным. После паузы текущая фраза переносится в подтверждённую часть. Если при старте появляется сообщение, что модель не найдена, запустите <code>Install_Models.bat</code>: установщик разместит T-one и резервный Vosk в папках, которые ищет приложение.</p>
-        <h3>Управление записью</h3>
-        <ul>
-          <li><b>Начать запись / Стоп</b> — обычное завершение захвата. Приложение обрабатывает аудио, которое уже попало в очередь.</li>
-          <li><b>Прервать</b> — аварийная остановка захвата и отмена оставшегося распознавания. Уже полученный текст сохраняется.</li>
-          <li><b>Сбросить запись</b> — останавливает активную диктовку/распознавание и очищает текущий результат.</li>
-          <li><b>Сохранить текст</b> — сохраняет содержимое редактора в TXT.</li>
-        </ul>
-        <p>Если в режиме «Авто» текст появляется медленно, проверьте строку состояния: если используется Whisper, установите Sherpa-ONNX / T-one или Vosk. Сам выбор модели Whisper не превращает его в потоковый движок.</p>
-        """,
-    ),
-    (
-        "Файлы и очередь",
-        """
-        <h2>Загрузка файлов и очередь</h2>
-        <ol>
-          <li>Нажмите «Добавить» или перетащите медиафайлы в окно очереди.</li>
-          <li>Выберите файл слева. Статус задачи виден в столбце «Статус»; длительность, размер и формат показаны над плеером и в подсказке файла.</li>
-          <li>Нажмите «Очередь», чтобы начать последовательную обработку.</li>
-          <li>Используйте плеер и волну для прослушивания исходной записи и проверки фрагментов.</li>
-        </ol>
-        <h3>Остановка и возобновление</h3>
-        <ul>
-          <li><b>Пауза</b> — приостанавливает обработку на ближайшей безопасной границе сегмента.</li>
-          <li><b>Остановить и сохранить</b> — завершает текущий этап, сохраняя контрольную точку и распознанные фрагменты. Задачу можно продолжить позже.</li>
-          <li><b>Прервать и сбросить</b> — отменяет выбранную задачу и удаляет промежуточный текст/контрольную точку, исходный файл не удаляется.</li>
-          <li><b>Продолжить / повторить</b> — возобновляет приостановленную задачу или запускает неудачную/отменённую заново.</li>
-        </ul>
-        <h3>Промежуточный результат</h3>
-        <p>Готовые сегменты появляются в редакторе во время обработки. При переключении на другую задачу её сохранённые сегменты снова отображаются. После завершения текст можно исправлять вручную; изменения автоматически сохраняются.</p>
-        <p>Ширину списка файлов и рабочей области, а также высоту панели статуса и редактора можно регулировать перетаскиванием разделителей.</p>
-        <h3>Точное число участников</h3>
-        <p>Перед нажатием «Авто-спикеры» укажите ожидаемое число спикеров в поле рядом с кнопкой. Например, выберите 2 для разговора двух людей: модель ограничит разметку двумя голосовыми профилями. Значение сохраняется для следующих задач. «Авто» оставляет число профилей модели на её усмотрение. Если в аудио есть фоновый голос, музыка или очень короткие реплики, проверьте результат и при необходимости скорректируйте спорные фрагменты вручную.</p>
-        <h3>Выбор модели</h3>
-        <p>Перед запуском очереди выберите распознаватель в списке «Модель распознавания». В нём показываются только найденные локальные модели faster-whisper и Whisper.cpp. «Как в настройках» использует общий режим из вкладки настроек.</p>
-        """,
-    ),
-    (
-        "Озвучка",
-        """
-        <h2>Преобразование текста в речь</h2>
-        <p>Раздел «Озвучка» превращает текст в аудио. Вставьте текст, откройте TXT/MD/DOCX или отправьте сюда результат ИИ. Markdown-заголовки, выделение, списки и ссылки не зачитываются как символы: голос читает сам текст. Выберите голос и скорость; процент отображается рядом с ползунком.</p>
-        <h3>Диалог с двумя голосами</h3>
-        <p>Чтобы прослушать расшифровку диалога, оставьте метки в начале строк, например <code>Спикер 1: Добрый день.</code> и <code>Спикер 2: Здравствуйте.</code>. По кнопке «Озвучить диалог» в очереди текст передаётся вместе с такими метками; сохранённые голоса профилей применяются автоматически. Голос можно выбрать в «Участники…», в столбце «Голос озвучки». Это ручной выбор тембра и он не определяет пол реального участника.</p>
-        <h3>Прослушивание и экспорт</h3>
-        <ul>
-          <li>Нажмите «Озвучить», дождитесь готовности файла и используйте «Слушать» для проверки.</li>
-          <li>«Сохранить WAV / MP3» экспортирует результат в выбранный формат. MP3 создаётся локальным ffmpeg.</li>
-          <li>Промежуточные файлы остаются в <code>Документы/Spiker/results/Озвучка</code>.</li>
-        </ul>
-        <p>Встроенные Piper-голоса работают офлайн. Разбиение по предложениям сохраняет пунктуационные паузы; тембр и естественность всё равно ограничены качеством исходной модели.</p>
-        """,
-    ),
-    (
-        "Участники и спикеры",
-        """
-        <h2>Диаризация и ручная работа с участниками</h2>
-        <p>Диаризация отвечает на вопрос «какой голос говорит в этот момент». Она не определяет настоящее имя человека.</p>
-        <h3>Автоматическое определение</h3>
-        <p>При включённом параметре «Автоматически определять спикеров» СПИКЕР запускает локальную модель pyannote после распознавания всей записи. Она группирует речевые интервалы по голосовым признакам и автоматически назначает стабильные ID «Спикер 1», «Спикер 2» и т. д. ИИ-обработка для этого не нужна.</p>
-        <p>Для автоматической разметки нужен pyannote.audio и локальная модель <code>speaker-diarization-community-1</code>. Запустите <code>Install_Speaker_Diarization.bat</code> из папки программы, примите условия доступа на Hugging Face и введите Read-токен. Установщик создаст отдельное окружение Python 3.11; токен не сохраняется. В Setup основные модели речи уже включены.</p>
-        <h3>Имена участников и тайм-коды</h3>
-        <ul>
-          <li>После анализа откройте «Участники…»: в таблице профилей переименуйте «Спикер 1» в нужное имя. Это имя сразу применяется ко всем репликам этого ID, статистике и экспорту.</li>
-          <li>Обычно не нужно назначать каждую реплику вручную. Вкладка «Точечная правка реплик» нужна только для исправления отдельных ошибок автоматики.</li>
-          <li>Кнопка «Тайм-коды» показывает время начала и конца каждой реплики. Используйте плеер и временную шкалу для перепроверки фрагмента.</li>
-          <li>«Скрыть спикеров» убирает подписи из отображаемого текста, но не удаляет ID участников из структуры результата.</li>
-          <li>Цвет реплик помогает визуально отличать участников. «Тайм-коды» выводит время начала и окончания каждой реплики; если доступны словесные метки, границы смены голоса уточняются по словам.</li>
-        </ul>
-        <p>Кнопка «Авто-спикеры» повторно запускает pyannote на уже готовом аудио без повторной транскрибации и без ИИ. Это удобно, если библиотека или модель были установлены после первоначального распознавания.</p>
-        <p>Если автоматическая диаризация не сработала, ручное назначение остаётся доступным после получения сегментов.</p>
-        """,
-    ),
-    (
-        "Модели и производительность",
-        """
-        <h2>Как выбирать модель распознавания</h2>
-        <p>В очереди доступны faster-whisper Small и Medium: Small быстрее и требует меньше памяти, Medium обычно точнее и тяжелее. Whisper.cpp Small выглядит как ещё одна Small, потому что использует тот же размер семейства Whisper, но это отдельный движок и GGML-файл для резервного распознавания. Модель T-one отдельно отвечает за потоковую диктовку с микрофона.</p>
-        <h3>Модели для файловой транскрибации</h3>
-        <ul>
-          <li><b>faster-whisper Small</b> — быстрый вариант в формате CTranslate2 для повседневных записей.</li>
-          <li><b>faster-whisper Medium</b> — обычно точнее Small, но требует больше времени и памяти.</li>
-          <li><b>Whisper.cpp Small</b> — резервный вариант в другом формате (GGML); это не тот же файл, что и faster-whisper Small.</li>
-          <li><b>Large-v3 Turbo</b> — более производительная крупная модель для высокого качества при ограничении времени.</li>
-          <li><b>Large-v3</b> — вариант, когда качество важнее скорости и компьютер располагает достаточной памятью.</li>
-        </ul>
-        <p>Фактический результат зависит от процессора, GPU, свободной VRAM/RAM, драйверов, библиотек и самой записи. Названия «быстрая» и «точная» — ориентиры, а не гарантия.</p>
-        <h3>faster-whisper / CTranslate2</h3>
-        <p>Для faster-whisper нужна локальная модель в формате CTranslate2, а не обычный файл GGML/GGUF/Whisper.cpp. CUDA/FP16 предназначены для совместимой NVIDIA-среды; CPU/INT8 — резервный путь. Большой batch может повысить пропускную способность, но увеличивает потребление памяти и не всегда улучшает скорость на CPU.</p>
-        <h3>Профили</h3>
-        <ul>
-          <li><b>Скорость</b> — Small, более крупный batch, экономичный тип вычислений.</li>
-          <li><b>Сбалансировано</b> — Medium и умеренный batch.</li>
-          <li><b>Высокая точность</b> — Large-v3 и небольшой batch.</li>
-          <li><b>Ручная настройка</b> — самостоятельно задайте движок, устройство, тип вычислений, модель и batch.</li>
-        </ul>
-        <p>Кнопка «Проверить компьютер и подобрать режим» применяет рекомендации к форме и сохраняет их. Если faster-whisper или выбранная модель не установлены, автоматический режим может продолжить работу через Whisper.cpp — это будет явно указано в результате диагностики.</p>
-        <h3>Дополнительные параметры</h3>
-        <ul>
-          <li><b>VAD</b> помогает пропускать тишину.</li>
-          <li><b>Словесные временные метки</b> требуют поддержки движка/выравнивания и увеличивают объём результата.</li>
-          <li><b>Нормализация</b> мягко выравнивает громкость; агрессивная очистка может повредить тихую речь.</li>
-          <li><b>Контекстный словарь</b> передаёт faster-whisper подсказки с именами и терминами, но не гарантирует написание.</li>
-        </ul>
-        """,
-    ),
-    (
-        "ИИ, экспорт и приватность",
-        """
-        <h2>ИИ-обработка — дополнительный этап</h2>
-        <p>Панель ИИ получает готовую расшифровку. В ней можно подготовить краткое содержание, конспект, протокол, список решений и задач, задать вопросы по встрече или получить сводку по участникам. Можно вводить собственные промты и сохранять их в список быстрых инструкций. Это не обязательная часть распознавания.</p>
-        <p>Для локального анализа используется предварительно установленная модель через Ollama. При выборе внешнего API текст отправляется выбранному провайдеру. Перед отправкой конфиденциальных записей проверьте настройки.</p>
-        <h3>Экспорт</h3>
-        <ul>
-          <li><b>TXT</b> — простой текст.</li>
-          <li><b>DOCX</b> — документы и протоколы (для ИИ-результатов, если доступен соответствующий экспорт).</li>
-          <li><b>SRT / VTT</b> — субтитры с временными отметками.</li>
-          <li><b>JSON</b> — структурированные сегменты, временные отметки и ID спикеров.</li>
-        </ul>
-        <h3>Если что-то работает не так</h3>
-        <ol>
-          <li>Откройте настройки и проверьте, какой движок фактически выбран.</li>
-          <li>Проверьте наличие модели и соответствующей библиотеки в локальном окружении приложения.</li>
-          <li>Если не работают CUDA или pyannote, временно выберите CPU/Whisper.cpp либо отключите диаризацию и повторите проверку.</li>
-          <li>При ошибке откройте папку <code>logs</code> и сохраните журнал вместе с описанием модели, файла и режима.</li>
-        </ol>
-        """,
-    ),
+    ('Начало работы',
+     '<h2>Какой раздел открыть</h2><ol><li>Микрофон — записать свою речь. Файлы — расшифровать готовое аудио или видео.</li><li>ИИ — сделать краткое содержание, протокол или отчёт о беседе. Озвучка — получить WAV или MP3 из текста.</li><li>Если модель не найдена, откройте Настройки → Папка моделей и проверьте, что архивы из комплекта обработал установщик.</li></ol>'),
+    ('Диктовка',
+     '<h2>Запись не начинается или прерывается</h2><ol><li>Оставьте «По умолчанию в Windows» или выберите конкретный вход. После подключения гарнитуры обновите список кнопкой «Обновить».</li><li>Дождитесь надписи «Микрофон подключён. Теперь говорите». В режиме «Авто» СПИКЕР попробует Vosk, если T-one слышит сигнал, но не выдаёт текст. Если шкала молчит, откройте «Параметры Windows → Система → Звук → Ввод» и проверьте вход и доступ к микрофону.</li><li>При обрыве проверьте сообщение над текстом, выберите доступный микрофон и запустите снова. Уже распознанный текст можно сохранить или передать в ИИ.</li></ol>'),
+    ('Файлы и участники',
+     '<h2>Расшифровать запись и проверить, кто говорил</h2><ol><li>Добавьте записи, выберите модель для каждого файла или включите «Одна модель для всей очереди». Нажмите кнопку запуска очереди. Следующие файлы стартуют по одному, даже если вы открыли другой раздел.</li><li>Звуковая волна открыта сразу. В плеере ▶ запускает запись, ■ останавливает, соседние кнопки перематывают. В настройках плеера можно изменить громкость, скорость и шаг.</li><li>Для новых задач установлены два участника. Если говорили один или трое, выставьте число и нажмите «Авто-спикеры». В «Участниках» переименуйте профиль сразу во всех репликах и исправьте спорные места.</li><li>Откройте «Экспорт», чтобы сохранить результат в обычный файл. Проверьте имена и сложные фрагменты на слух.</li></ol>'),
+    ('Обработка ИИ',
+     '<h2>Превратить расшифровку в документ</h2><ol><li>Откройте TXT или передайте текст из «Диктовки» или очереди. Тайм-коды и метки спикеров можно добавить отдельно: по умолчанию передаётся только текст.</li><li>Выберите краткое содержание, протокол, отчёт «Беседа с кандидатом» или свою задачу. Встроенные GigaChat и Qwen работают на компьютере; внешний провайдер может получить текст по сети.</li><li>Для отчёта о беседе проверьте роли, имена, цитаты и смысл исправлений. ИИ может ошибаться; исходник не изменяется.</li></ol>'),
+    ('Озвучка',
+     '<h2>Озвучить текст с паузами и ударениями</h2><ol><li>Вставьте текст или откройте TXT/DOCX. Выберите Ирину или Руслана, настройте темп. В диалоге назначьте голоса в «Участниках» очереди.</li><li>Выберите Qwen или GigaChat и нажмите «Подготовить дикцию». Длинный текст делится на фрагменты автоматически и снова собирается в один текст. При озвучке получится один файл. Проверьте предпросмотр; вручную можно написать «за́мок» или «замо́к».</li><li>Прослушайте фрагмент, прежде чем сохранять WAV или MP3. Синтез может ошибаться в фамилиях и омографах.</li></ol>'),
+    ('Модели',
+     '<h2>Выбрать точность распознавания</h2><ol><li>Для файлов: Small — быстрее; Medium — баланс; Large-v3 — для сложных записей. Если не знаете, что выбрать, запустите диагностику ПК. Ссылки и пути для моделей CTranslate2, Whisper.cpp и GGUF находятся в «Настройки → Где скачать модели».</li><li>Для диктовки оставьте «Авто»: T-one выводит текст в потоке, Vosk служит запасным потоковым движком, Whisper обрабатывает короткими окнами.</li></ol>'),
 ]
+
+GUIDE_ICONS = (
+    "guide-start.png", "guide-dictation.png", "guide-files.png",
+    "guide-ai.png", "guide-speech.png", "guide-models.png",
+)
 
 
 class UserGuidePage(QWidget):
-    """Practical guide embedded in the main tab stack, styled like Settings and Help."""
-
+    """Tutorials use a dedicated player screen and return to the same card list."""
     def __init__(self, main_window=None, parent=None):
         super().__init__(parent)
         self.main_window = main_window
         self.setObjectName("userGuidePage")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setAutoFillBackground(False)
         apply_window_theme(self)
 
-        root = QVBoxLayout(self)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.pages = QStackedWidget()
+        layout.addWidget(self.pages)
+        self.cover = QWidget()
+        self.pages.addWidget(self.cover)
+        self._video_window_state = None
+        root = QVBoxLayout(self.cover)
         root.setContentsMargins(24, 18, 24, 20)
-        root.setSpacing(10)
-        top_row = QHBoxLayout()
-        back_button = QPushButton("←  Назад")
-        back_button.setProperty("role", "back")
-        back_button.setMinimumHeight(36)
-        back_button.clicked.connect(self.back_to_home)
-        top_row.addWidget(back_button, 0, Qt.AlignmentFlag.AlignTop)
-        heading_stack = QVBoxLayout()
-        heading_stack.setSpacing(2)
-        heading = QLabel("Инструкция по работе с приложением")
+        header = QHBoxLayout()
+        back = QPushButton("← На главный экран")
+        back.setProperty("role", "back")
+        back.clicked.connect(self.back_to_home)
+        header.addWidget(back, 0, Qt.AlignmentFlag.AlignTop)
+        titles = QVBoxLayout()
+        heading = QLabel("Обучение")
         heading.setObjectName("dialogTitle")
-        heading_stack.addWidget(heading)
-        subtitle = QLabel("Практическое руководство по диктовке, очереди, спикерам, моделям, настройкам и ИИ-анализу.")
-        subtitle.setObjectName("mutedLabel")
-        subtitle.setWordWrap(True)
-        heading_stack.addWidget(subtitle)
-        top_row.addLayout(heading_stack, 1)
-        root.addLayout(top_row)
+        titles.addWidget(heading)
+        intro = QLabel("Короткие инструкции на одной странице. Нажмите кнопку в карточке, чтобы посмотреть видео.")
+        intro.setWordWrap(True)
+        intro.setObjectName("mutedLabel")
+        titles.addWidget(intro)
+        header.addLayout(titles, 1)
+        root.addLayout(header)
 
-        self.tabs = QTabWidget(self)
-        self.tabs.setObjectName("userGuideTabs")
-        for title, html in GUIDE_PAGES:
-            page = QWidget()
-            page.setObjectName("userGuideTabPage")
-            page.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-            page.setAutoFillBackground(False)
-            layout = QVBoxLayout(page)
-            layout.setContentsMargins(8, 8, 8, 8)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.viewport().setStyleSheet("background: transparent;")
+        self.card_body = QWidget()
+        self.card_body.setObjectName("guideCards")
+        self.card_grid = QGridLayout(self.card_body)
+        self.card_grid.setContentsMargins(2, 8, 7, 13)
+        self.card_grid.setSpacing(13)
+        self.scroll.setWidget(self.card_body)
+        root.addWidget(self.scroll, 1)
+        self.cards = []
+        self.player_panel = None
+        self.active_card = None
+        self._columns = 0
+        for i, ((title, html), icon) in enumerate(zip(GUIDE_PAGES, GUIDE_ICONS), 1):
+            card = LiquidGlassCard(self.card_body)
+            body = QVBoxLayout(card)
+            body.setContentsMargins(17, 12, 17, 18)
+            body.setSpacing(8)
+            lead = QHBoxLayout()
+            artwork = IconGlass(get_app_root() / "icons" / icon)
+            artwork.set_responsive_width(88)
+            lead.addWidget(artwork, 0, Qt.AlignmentFlag.AlignVCenter)
+            heading = QVBoxLayout()
+            eyebrow = QLabel(f"{i:02d}  /  СПИКЕР")
+            eyebrow.setObjectName("sectionLabel")
+            heading.addWidget(eyebrow)
+            label = QLabel(title)
+            label.setObjectName("compactCardTitle")
+            label.setWordWrap(True)
+            heading.addWidget(label)
+            lead.addLayout(heading, 1)
+            body.addLayout(lead)
+            text = QLabel()
+            text.setObjectName("guideInstruction")
+            text.setTextFormat(Qt.TextFormat.RichText)
+            text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            text.setWordWrap(True)
+            subhead = html.replace("<h2>", '<p style="font-weight:600; margin: 2px 0;">').replace("</h2>", "</p>")
+            text.setText(subhead)
+            body.addWidget(text)
+            body.addStretch(1)
+            actions = QGridLayout()
+            actions.setSpacing(7)
+            for j, (clip, filename) in enumerate(GUIDE_VIDEOS[title]):
+                watch = QPushButton(f"Видео: {clip}")
+                watch.setProperty("role", "primary")
+                watch.setToolTip("Открыть видео на весь экран")
+                watch.clicked.connect(lambda checked=False, item=card, name=clip, file=filename:
+                                      self.play_video(item, name, file))
+                actions.addWidget(watch, j, 0)
+            body.addLayout(actions)
+            card.video_error = QLabel("Видео не найдено. Текст инструкции доступен в этой карточке.")
+            card.video_error.setObjectName("mutedLabel")
+            card.video_error.setWordWrap(True)
+            body.addWidget(card.video_error)
+            card.video_error.hide()
+            self.cards.append(card)
+        self._arrange_cards()
+        self.scroll.viewport().installEventFilter(self)
 
-            # QTextBrowser is a QAbstractScrollArea: styling only the outer widget
-            # leaves its viewport with Qt's default gray Base brush on Windows.
-            # A translucent blue panel is the visual surface; the browser and its
-            # viewport are explicitly transparent so the panel shows through.
-            content_panel = QFrame(page)
-            content_panel.setObjectName("userGuideContentPanel")
-            content_panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-            panel_layout = QVBoxLayout(content_panel)
-            panel_layout.setContentsMargins(14, 12, 14, 12)
-            panel_layout.setSpacing(0)
+    def _arrange_cards(self):
+        width = self.scroll.viewport().width()
+        columns = 2 if width >= 812 else 1
+        if columns == self._columns:
+            return
+        self._columns = columns
+        for column in range(2):
+            self.card_grid.setColumnStretch(column, int(column < columns))
+        for index, card in enumerate(self.cards):
+            self.card_grid.addWidget(card, index // columns, index % columns)
+        self.card_grid.setRowStretch(len(self.cards), 1)
 
-            browser = QTextBrowser(content_panel)
-            browser.setObjectName("userGuideText")
-            browser.setFrameShape(QFrame.Shape.NoFrame)
-            browser.setAutoFillBackground(False)
-            browser.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            browser.viewport().setAutoFillBackground(False)
-            browser.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            browser.viewport().setStyleSheet("background: transparent; border: 0;")
-            transparent_palette = browser.palette()
-            transparent_palette.setColor(QPalette.ColorRole.Base, QColor(8, 38, 97, 0))
-            browser.setPalette(transparent_palette)
-            browser.viewport().setPalette(transparent_palette)
-            browser.setStyleSheet(
-                "QTextBrowser#userGuideText { background: transparent; color: #F5FAFF; "
-                "border: 0; padding: 8px; } "
-                "QTextBrowser#userGuideText QWidget { background: transparent; }"
-            )
-            browser.setOpenExternalLinks(False)
-            browser.setHtml(html)
-            panel_layout.addWidget(browser)
-            layout.addWidget(content_panel)
-            self.tabs.addTab(page, title)
-        root.addWidget(self.tabs, 1)
+    def eventFilter(self, obj, event):
+        if obj is self.scroll.viewport() and event.type() == QEvent.Type.Resize:
+            QTimer.singleShot(0, self._arrange_cards)
+        return super().eventFilter(obj, event)
 
+    def play_video(self, card, title, filename):
+        path = get_app_root() / "docs" / "videos" / filename
+        if self.active_card is not None:
+            self.active_card.video_error.hide()
+        if not path.is_file():
+            self.stop_video()
+            self.active_card = card
+            card.video_error.show()
+            return
+        if self.player_panel is None:
+            from UI.Guide_video import create_video_player
+            self.player_panel = create_video_player(self.pages, on_back=self.stop_video)
+            self.pages.addWidget(self.player_panel)
+        self.active_card = card
+        card.video_error.hide()
+        self.pages.setCurrentWidget(self.player_panel)
+        window = self.window()
+        self._video_window_state = window.windowState()
+        window.showFullScreen()
+        self.player_panel.play_video(title, path)
+
+    def stop_video(self):
+        if self.player_panel is None or self.pages.currentWidget() is not self.player_panel:
+            return
+        state, self._video_window_state = self._video_window_state, None
+        self.player_panel.stop_video()
+        self.pages.setCurrentWidget(self.cover)
+        if state is not None:
+            self.window().setWindowState(state)
+
+    def hideEvent(self, event):
+        if not event.spontaneous() and self.window().isVisible():
+            self.stop_video()
+        super().hideEvent(event)
 
     def back_to_home(self):
         if self.main_window is not None:

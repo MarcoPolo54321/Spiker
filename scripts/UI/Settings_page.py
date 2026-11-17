@@ -5,10 +5,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl, QProcess
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout, QLabel, QPushButton,
     QComboBox, QSpinBox, QFrame, QScrollArea, QSizePolicy, QSpacerItem,
     QCheckBox, QLineEdit, QFileDialog, QMessageBox,
 )
@@ -16,19 +16,19 @@ from PySide6.QtGui import QDesktopServices
 
 from app_config import load_settings, save_settings
 from app_paths import get_user_data_root
+from model_paths import local_models_dir, model_roots
+from dictation_models import available_whisper_models, is_multilingual, is_whisper_model, pick_dictation_model
+from UI.theme import apply_window_theme
 
 
 class SettingsPage(QWidget):
     def __init__(self, project_root: Path, on_back, model_path_getter, model_path_setter, parent=None):
         super().__init__(parent)
         self.project_root = Path(project_root)
-        self.bundled_models_root = self.project_root / "models"
-        self.models_root = get_user_data_root(self.project_root) / "models"
+        self.models_root = local_models_dir(self.project_root)
         self.on_back = on_back
         self.model_path_getter = model_path_getter
         self.model_path_setter = model_path_setter
-        self.models_root.mkdir(parents=True, exist_ok=True)
-        (self.models_root / "whisper").mkdir(parents=True, exist_ok=True)
         self.setObjectName("settingsPage")
 
         outer = QVBoxLayout(self)
@@ -75,13 +75,11 @@ class SettingsPage(QWidget):
         model_layout.setContentsMargins(20, 18, 20, 18)
         model_layout.setSpacing(12)
 
-        model_title = QLabel("РЕЗЕРВНАЯ МОДЕЛЬ WHISPER.CPP ДЛЯ ФАЙЛОВ")
+        model_title = QLabel("ДИКТОВКА")
         model_title.setObjectName("sectionLabel")
         model_layout.addWidget(model_title)
         model_description = QLabel(
-            "Это отдельная GGML-модель и резервный движок. В очереди основными вариантами являются "
-            "faster-whisper Small и Medium (формат CTranslate2); здесь выбирается только Whisper.cpp .bin. "
-            "Мастер моделей устанавливает Small, а список можно обновить или указать свой файл."
+            "В режиме «Авто» СПИКЕР использует потоковую модель T-one. Микрофон выбирается на странице диктовки."
         )
         model_description.setObjectName("cardDescription")
         model_description.setWordWrap(True)
@@ -98,15 +96,15 @@ class SettingsPage(QWidget):
         self.refresh_button.setMinimumHeight(42)
         self.refresh_button.clicked.connect(self.refresh_models)
         model_row.addWidget(self.refresh_button)
-        model_layout.addLayout(model_row)
+        model_row_widget = QWidget()
+        model_row_widget.setLayout(model_row)
 
-        dictation_title = QLabel("ДВИЖОК И РЕЗЕРВНАЯ МОДЕЛЬ ДЛЯ ДИКТОВКИ")
+        dictation_title = QLabel("Режим диктовки")
         dictation_title.setObjectName("sectionLabel")
         model_layout.addWidget(dictation_title)
         dictation_description = QLabel(
-            "Рекомендуемый режим — Авто: при установленной модели T-one используется потоковое распознавание "
-            "примерно по 100 мс аудио, затем Vosk или Whisper как резерв. Whisper обрабатывает отдельные окна "
-            "и обычно имеет большую задержку."
+            "Авто сначала пробует T-one (потоковая диктовка на русском), затем Vosk (лёгкая потоковая модель), "
+            "затем Whisper.cpp (распознаёт короткими фрагментами, с большей задержкой)."
         )
         dictation_description.setObjectName("mutedLabel")
         dictation_description.setWordWrap(True)
@@ -125,17 +123,15 @@ class SettingsPage(QWidget):
         self.dictation_model_combo.setToolTip("Резервный GGML/Whisper.cpp .bin. Для Sherpa/T-one или Vosk эта модель не используется.")
         model_layout.addWidget(self.dictation_model_combo)
         dictation_fallback_label = QLabel(
-            "Список ниже — только резервная модель Whisper.cpp для режима Whisper. При выборе Sherpa/T-one "
-            "или Vosk этот файл не используется: у потоковых движков собственные модели."
+            "Эта модель нужна только для Whisper. Small — баланс точности и скорости, Base — легче и быстрее, "
+            "Tiny — самый лёгкий вариант для слабых ПК. Base и Tiny чаще ошибаются в именах и на шумной записи."
         )
         dictation_fallback_label.setObjectName("mutedLabel")
         dictation_fallback_label.setWordWrap(True)
-        model_layout.addWidget(dictation_fallback_label)
 
         self.model_details = QLabel("Проверяем папку models…")
         self.model_details.setObjectName("mutedLabel")
         self.model_details.setWordWrap(True)
-        model_layout.addWidget(self.model_details)
 
         self.model_help = QLabel(
             "Как не перепутать модели:\n"
@@ -146,7 +142,23 @@ class SettingsPage(QWidget):
         )
         self.model_help.setObjectName("cardDescription")
         self.model_help.setWordWrap(True)
-        model_layout.addWidget(self.model_help)
+        model_advanced = QWidget()
+        model_advanced_layout = QVBoxLayout(model_advanced)
+        model_advanced_layout.setContentsMargins(0, 0, 0, 0)
+        model_advanced_layout.addWidget(QLabel("Whisper.cpp для файлов (резервный движок)"))
+        model_advanced_layout.addWidget(model_row_widget)
+        model_advanced_layout.addWidget(self.model_details)
+        model_advanced_layout.addWidget(self.model_help)
+        model_advanced.hide()
+        model_details_button = QPushButton("Резервные модели для файлов")
+        model_details_button.setCheckable(True)
+        model_details_button.toggled.connect(model_advanced.setVisible)
+        model_layout.addWidget(model_details_button)
+        model_layout.addWidget(model_advanced)
+        self.dictation_engine_combo.currentIndexChanged.connect(
+            lambda: self.dictation_model_combo.setVisible(self.dictation_engine_combo.currentData() == "whisper")
+        )
+        self.dictation_model_combo.hide()
 
         folder_row = QHBoxLayout()
         self.install_models_button = QPushButton("Установить / восстановить модели")
@@ -163,14 +175,38 @@ class SettingsPage(QWidget):
         folder_row.addWidget(self.open_models_button)
         folder_row.addStretch(1)
         model_layout.addLayout(folder_row)
-        content_layout.addWidget(model_card)
+
+        download_toggle = QPushButton("Где скачать модели")
+        download_toggle.setProperty("role", "secondary")
+        download_toggle.setCheckable(True)
+        download_help = QLabel(
+            '<b>Распознавание файлов.</b> Откройте '
+            '<a style="color:#85dbff" href="https://huggingface.co/Systran/faster-whisper-medium">модели faster-whisper</a>. '
+            'Скачайте всю папку модели CTranslate2. Поместите папку в <code>models/faster-whisper</code> '
+            'и укажите её в «Дополнительных настройках» распознавания (модель: «Авто» в очереди).'
+            '<br><br><b>Резервный Whisper.cpp.</b> Скачайте файл <code>ggml-*.bin</code> из '
+            '<a style="color:#85dbff" href="https://huggingface.co/ggerganov/whisper.cpp">репозитория Whisper.cpp</a>, '
+            'положите его в <code>models/whisper</code> и нажмите «Обновить» в списке резервных моделей.'
+            '<br><br><b>ИИ и подготовка дикции.</b> Выберите совместимую с llama.cpp текстовую модель '
+            '<a style="color:#85dbff" href="https://huggingface.co/models?library=gguf">в каталоге GGUF</a> '
+            '(например, <a style="color:#85dbff" href="https://huggingface.co/Qwen/Qwen3-4B-GGUF">Qwen3‑4B</a>). '
+            'Положите один файл <code>.gguf</code> в <code>models/llm</code> и снова откройте «ИИ» или «Озвучку». '
+            'Выберите его в списке. Совместимость зависит от архитектуры модели и версии движка.'
+        )
+        download_help.setOpenExternalLinks(True)
+        download_help.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        download_help.setWordWrap(True)
+        download_help.hide()
+        download_toggle.toggled.connect(download_help.setVisible)
+        model_layout.addWidget(download_toggle)
+        model_layout.addWidget(download_help)
 
         performance_card = QFrame()
         performance_card.setObjectName("panel")
         performance_layout = QVBoxLayout(performance_card)
         performance_layout.setContentsMargins(20, 18, 20, 18)
         performance_layout.setSpacing(12)
-        performance_title = QLabel("ПРОИЗВОДИТЕЛЬНОСТЬ И РАСШИРЕННАЯ ТРАНСКРИБАЦИЯ")
+        performance_title = QLabel("РАСПОЗНАВАНИЕ ФАЙЛОВ")
         performance_title.setObjectName("sectionLabel")
         performance_layout.addWidget(performance_title)
 
@@ -185,7 +221,10 @@ class SettingsPage(QWidget):
         self.effective_backend_label = QLabel("Фактический движок будет определён по установленным библиотекам и моделям.")
         self.effective_backend_label.setObjectName("cardDescription")
         self.effective_backend_label.setWordWrap(True)
-        performance_layout.addWidget(self.effective_backend_label)
+        advanced = QWidget()
+        advanced_layout = QVBoxLayout(advanced)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        advanced_layout.addWidget(self.effective_backend_label)
 
         form = QFormLayout()
         form.setHorizontalSpacing(18)
@@ -220,10 +259,11 @@ class SettingsPage(QWidget):
         self.faster_model_combo.setToolTip(
             "faster-whisper использует формат CTranslate2. Small быстрее и легче; Medium обычно точнее, но требует больше памяти."
         )
-        for label, value in (("Small · faster-whisper — быстрее", "small"), ("Medium · faster-whisper — точнее", "medium"),
-                             ("Large-v3 Turbo — быстрее Large", "large-v3-turbo"),
-                             ("Large-v3 — точность", "large-v3")):
+        for label, value in (("Быстро · Small", "small"), ("Баланс · Medium", "medium"),
+                             ("Максимальная точность · Large-v3", "large-v3")):
             self.faster_model_combo.addItem(label, value)
+        performance_layout.insertWidget(1, QLabel("Точность по умолчанию"))
+        performance_layout.insertWidget(2, self.faster_model_combo)
         self.batch_spin = QSpinBox()
         self.batch_spin.setRange(1, 32)
         self.batch_spin.setSuffix(" аудиофрагм")
@@ -261,20 +301,19 @@ class SettingsPage(QWidget):
         self.speaker_min_spin.setSpecialValueText("Авто")
         self.speaker_max_spin = QSpinBox()
         self.speaker_max_spin.setRange(0, 20)
-        self.speaker_max_spin.setSpecialValueText("Авто")
+        self.speaker_max_spin.setSpecialValueText("Без ограничения")
         speaker_range = QHBoxLayout()
         speaker_range.addWidget(QLabel("Мин."))
         speaker_range.addWidget(self.speaker_min_spin)
         speaker_range.addWidget(QLabel("Макс."))
         speaker_range.addWidget(self.speaker_max_spin)
         speaker_range.addStretch(1)
-        speaker_range_label = QLabel("Равные значения задают точное число участников; в очереди это также можно выбрать рядом с «Авто-спикеры».")
+        speaker_range_label = QLabel("По умолчанию ищем до двух участников, но оставляем запись с одним голосом одним спикером. Равные значения задают точное число; если голосов больше, увеличьте максимум здесь или укажите точное число в очереди.")
         speaker_range_label.setWordWrap(True)
         form.addRow("Движок распознавания", self.engine_combo)
         form.addRow("Профиль скорости / точности", self.performance_combo)
         form.addRow("Устройство", self.device_combo)
         form.addRow("Тип вычислений", self.compute_combo)
-        form.addRow("Модель faster-whisper", self.faster_model_combo)
         form.addRow("Папка модели faster-whisper", model_path_row)
         form.addRow("Размер пакета", self.batch_spin)
         form.addRow("Потоки процессора", self.threads_spin)
@@ -282,18 +321,14 @@ class SettingsPage(QWidget):
         form.addRow("Профиль аудио", self.audio_profile_combo)
         form.addRow("Аудиодорожка видео", self.audio_stream_spin)
         form.addRow("Контекстный словарь", self.context_terms_edit)
-        performance_layout.addLayout(form)
+        advanced_layout.addLayout(form)
         options = QVBoxLayout()
         options.addWidget(self.vad_check)
         options.addWidget(self.word_timestamps_check)
         options.addWidget(self.normalize_check)
-        options.addWidget(self.diarization_check)
         options.addWidget(self.show_speakers_check)
-        performance_layout.addLayout(options)
-        speaker_form = QFormLayout()
-        speaker_form.addRow("Количество участников", speaker_range)
-        speaker_form.addRow("", speaker_range_label)
-        performance_layout.addLayout(speaker_form)
+        advanced_layout.addLayout(options)
+        performance_layout.addWidget(self.diarization_check)
 
         note = QLabel(
             "Важно: профиль, модель faster-whisper, устройство CUDA/CPU, тип вычислений и batch влияют на "
@@ -305,7 +340,7 @@ class SettingsPage(QWidget):
         )
         note.setObjectName("mutedLabel")
         note.setWordWrap(True)
-        performance_layout.addWidget(note)
+        advanced_layout.addWidget(note)
 
         model_compatibility = QLabel(
             "Модели faster-whisper должны быть заранее загружены и находиться в models/faster-whisper/<имя> "
@@ -316,7 +351,7 @@ class SettingsPage(QWidget):
         )
         model_compatibility.setObjectName("mutedLabel")
         model_compatibility.setWordWrap(True)
-        performance_layout.addWidget(model_compatibility)
+        advanced_layout.addWidget(model_compatibility)
         parallel_note = QLabel(
             "Параллельная работа файлов и диктовки использует отдельные контексты модели. Это повышает отзывчивость, "
             "но может почти удвоить потребление памяти при выборе Medium для обоих процессов. Для диктовки лучше Small, "
@@ -324,8 +359,18 @@ class SettingsPage(QWidget):
         )
         parallel_note.setObjectName("mutedLabel")
         parallel_note.setWordWrap(True)
-        performance_layout.addWidget(parallel_note)
-        content_layout.addWidget(performance_card)
+        advanced_layout.addWidget(parallel_note)
+        advanced.hide()
+        details = QPushButton("Дополнительные настройки")
+        details.setCheckable(True)
+        details.toggled.connect(advanced.setVisible)
+        performance_layout.addWidget(details)
+        performance_layout.addWidget(advanced)
+        self._primary_cards = (performance_card, model_card)
+        self._cards_grid = QGridLayout()
+        self._cards_columns = 0
+        content_layout.addLayout(self._cards_grid)
+        self._layout_cards()
 
         footer = QHBoxLayout()
         self.status_label = QLabel("Изменения ещё не сохранены.")
@@ -354,6 +399,25 @@ class SettingsPage(QWidget):
         self.faster_model_combo.currentIndexChanged.connect(self._refresh_backend_status)
         self.faster_model_path_edit.textChanged.connect(self._refresh_backend_status)
         self.refresh_models()
+        # This page is created lazily after the main window theme is applied.
+        # Apply the shared widget setup here too, especially for styled combo popups.
+        apply_window_theme(self)
+
+    def _layout_cards(self):
+        width = self.width()
+        columns = 2 if width >= 1040 else 1
+        if columns == self._cards_columns:
+            return
+        self._cards_columns = columns
+        for column in range(2):
+            self._cards_grid.setColumnStretch(column, int(column < columns))
+        for index, card in enumerate(self._primary_cards):
+            self._cards_grid.addWidget(card, index // columns, index % columns, Qt.AlignmentFlag.AlignTop)
+
+    def resizeEvent(self, event):
+        if hasattr(self, "_cards_grid"):
+            self._layout_cards()
+        super().resizeEvent(event)
 
     def _populate_preferences(self):
         settings = load_settings(self.project_root)
@@ -363,7 +427,10 @@ class SettingsPage(QWidget):
             (self.device_combo, "compute_device"), (self.compute_combo, "compute_type"),
             (self.faster_model_combo, "faster_whisper_model"),
         ):
-            idx = widget.findData(settings.get(key, "auto"))
+            value = settings.get(key, "auto")
+            if key == "faster_whisper_model" and value == "large-v3-turbo":
+                value = "large-v3"
+            idx = widget.findData(value)
             widget.setCurrentIndex(idx if idx >= 0 else 0)
         self.batch_spin.setValue(int(settings.get("batch_size", 1)))
         self.faster_model_path_edit.setText(settings.get("faster_whisper_model_path", ""))
@@ -386,10 +453,21 @@ class SettingsPage(QWidget):
         try:
             from transcription.hardware_diagnostics import diagnose_hardware
             report = diagnose_hardware()
+            from transcription.faster_whisper_backend import is_faster_whisper_available, resolve_faster_model
+            recommendation = str(report.recommended_model)
+            if recommendation == "large-v3-turbo":
+                recommendation = "large-v3"
+            tiers = ("small", "medium", "large-v3")
+            end = tiers.index(recommendation) if recommendation in tiers else 0
+            model_override = self.faster_model_path_edit.text().strip()
+            available = next(
+                (tier for tier in reversed(tiers[:end + 1]) if resolve_faster_model(self.project_root, tier, model_override)),
+                None,
+            )
             for widget, value in (
                 (self.device_combo, report.recommended_device),
                 (self.compute_combo, report.recommended_compute_type),
-                (self.faster_model_combo, report.recommended_model),
+                (self.faster_model_combo, available or recommendation),
             ):
                 index = widget.findData(value)
                 if index >= 0:
@@ -401,20 +479,10 @@ class SettingsPage(QWidget):
             # The recommendation must affect an engine that is actually installed.
             # If the automatic CTranslate2 path is not ready, select the closest
             # available Whisper.cpp .bin model instead of changing only dormant controls.
-            faster_ready = False
-            try:
-                from transcription.faster_whisper_backend import is_faster_whisper_available, resolve_faster_model
-                faster_ready = bool(
-                    is_faster_whisper_available()
-                    and resolve_faster_model(
-                        self.project_root, str(report.recommended_model), self.faster_model_path_edit.text().strip()
-                    )
-                )
-            except Exception:
-                faster_ready = False
+            faster_ready = bool(available and is_faster_whisper_available())
             engine_choice = str(self.engine_combo.currentData() or "auto")
             if not faster_ready and engine_choice in {"auto", "whispercpp"}:
-                self._select_whispercpp_model_for_recommendation(report.recommended_model)
+                self._select_whispercpp_model_for_recommendation(recommendation)
 
             ram = f"{report.ram_gb:.1f} ГБ всего" if report.ram_gb is not None else "не определена"
             if report.available_ram_gb is not None:
@@ -429,7 +497,7 @@ class SettingsPage(QWidget):
             cuda = "CUDA доступна для CTranslate2" if report.cuda_runtime_ready else "CUDA для CTranslate2 недоступна"
             details = [
                 f"CPU: {report.cpu} ({report.cpu_threads} потоков); ОЗУ: {ram}; GPU: {gpu}; {cuda}.",
-                f"Рекомендация применена: {report.recommendation}; модель {report.recommended_model}; "
+                f"Рекомендация применена: {report.recommendation}; модель {model_override or available or 'резервная Whisper.cpp'}; "
                 f"устройство {report.recommended_device.upper()} / {report.recommended_compute_type}; "
                 f"batch {report.recommended_batch_size}; CPU-потоки {max(1, min(report.cpu_threads, 8))}.",
                 *report.notes,
@@ -520,6 +588,8 @@ class SettingsPage(QWidget):
             live_engine = "Sherpa/T-one" if sherpa_ready else ("Vosk" if vosk_ready else "Whisper по коротким окнам")
 
         diarization_enabled = self.diarization_check.isChecked()
+        from transcription.onnx_diarization import available as onnx_diarization_ready
+        onnx_ready = onnx_diarization_ready(self.project_root)
         try:
             from transcription.speaker_diarization import diarization_model_path, is_pyannote_available, is_diarization_model_complete
             pyannote_installed = is_pyannote_available(self.project_root)
@@ -528,6 +598,8 @@ class SettingsPage(QWidget):
             pyannote_installed = pyannote_model = False
         if not diarization_enabled:
             diarization_status = "выключена в настройках"
+        elif onnx_ready:
+            diarization_status = "готова: локальные ONNX-модели разделения речи и голосовых признаков"
         elif pyannote_installed and pyannote_model:
             diarization_status = "pyannote и локальная модель найдены; диаризация работает локально"
         elif not pyannote_installed:
@@ -598,43 +670,26 @@ class SettingsPage(QWidget):
 
         self.model_combo.clear()
         self.dictation_model_combo.clear()
-        self.dictation_model_combo.addItem("Автовыбор быстрой модели (Small/Base/Tiny)", "")
         settings = load_settings(self.project_root)
         preferred_dictation = str(settings.get("dictation_model_path", "") or "")
         engine_index = self.dictation_engine_combo.findData(settings.get("dictation_engine", "auto"))
         self.dictation_engine_combo.setCurrentIndex(engine_index if engine_index >= 0 else 0)
-        models = []
-        model_roots = list(dict.fromkeys((self.models_root, self.bundled_models_root)))
-        model_root_for_path = {}
-        for models_root in model_roots:
-            if not models_root.exists():
-                continue
-            for path in models_root.rglob("*.bin"):
-                try:
-                    if (
-                        path.is_file()
-                        and path.stat().st_size >= 10 * 1024 * 1024
-                        and "faster-whisper" not in {part.lower() for part in path.parts}
-                    ):
-                        resolved = path.resolve()
-                        models.append(resolved)
-                        model_root_for_path[resolved] = models_root.resolve()
-                except OSError:
-                    continue
-        models.sort(key=lambda p: (p.name.lower(), str(p).lower()))
+        models = list(available_whisper_models(*model_roots(self.project_root)))
+        auto_model = pick_dictation_model(models)
+        self.dictation_model_combo.addItem(f"Автовыбор · {auto_model.name if auto_model else 'модель не найдена'}", "")
         for model_path in models:
             size_gb = model_path.stat().st_size / (1024 ** 3)
-            relative = model_path.relative_to(model_root_for_path[model_path])
-            origin = "встроенная" if model_root_for_path[model_path] == self.bundled_models_root.resolve() else "локальная"
-            label = f"{model_path.name}  ·  {size_gb:.2f} ГБ  ·  {relative.parent.as_posix()} · {origin}"
+            origin = "папка программы" if model_path.is_relative_to(self.models_root) else "папка пользователя"
+            label = f"{model_path.name}  ·  {size_gb:.2f} ГБ  ·  {origin}"
             self.model_combo.addItem(label, str(model_path))
             if current_resolved == str(model_path):
                 self.model_combo.setCurrentIndex(self.model_combo.count() - 1)
-            self.dictation_model_combo.addItem(label, str(model_path))
-            if preferred_dictation and str(model_path) == str(Path(preferred_dictation).expanduser().resolve()):
-                self.dictation_model_combo.setCurrentIndex(self.dictation_model_combo.count() - 1)
+            if is_multilingual(model_path):
+                self.dictation_model_combo.addItem(label, str(model_path))
+                if preferred_dictation and str(model_path) == str(Path(preferred_dictation).expanduser().resolve()):
+                    self.dictation_model_combo.setCurrentIndex(self.dictation_model_combo.count() - 1)
 
-        if current_resolved and Path(current_resolved).is_file() and current_resolved not in [
+        if current_resolved and is_whisper_model(current_resolved) and current_resolved not in [
             self.model_combo.itemData(i) for i in range(self.model_combo.count())
         ]:
             p = Path(current_resolved)
@@ -676,14 +731,17 @@ class SettingsPage(QWidget):
                 "В текущей системе этот установщик рассчитан на Windows и Python 3.11 x64.",
             )
             return
-        started = QProcess.startDetached(
-            "cmd.exe", ["/c", "start", "", str(installer)], str(self.project_root)
-        )
-        if not started:
+        try:
+            os.startfile(str(installer))
+        except OSError:
             QMessageBox.warning(self, "Не удалось запустить установщик", "Запустите Install_Models.bat вручную из папки СПИКЕР.")
 
     def open_models_folder(self):
-        self.models_root.mkdir(parents=True, exist_ok=True)
+        try:
+            self.models_root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            QMessageBox.warning(self, "Папка моделей", f"Нет доступа к папке: {self.models_root}")
+            return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.models_root.resolve())))
 
     def save_preferences(self):

@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from app_config import load_settings, save_settings
-from app_paths import get_user_data_root
+from app_paths import get_user_data_root, history_results_dir
 from ai_provider import process_transcript, probe_provider
 
 LOGGER = logging.getLogger("app.ai")
@@ -56,6 +56,7 @@ class AIWorker(QThread):
                 progress=lambda percent, message: self.progress.emit(percent, message),
                 cancelled=self.isInterruptionRequested,
                 speaker_context=self.job.get("speaker_context"),
+                interview_names=self.job.get("interview_names"),
             )
             if self.isInterruptionRequested():
                 self.error.emit("Обработка отменена.")
@@ -75,7 +76,7 @@ class AIProcessingPage(QWidget):
         super().__init__(parent)
         self.project_root = Path(project_root)
         self.on_back = on_back
-        self.results_dir = get_user_data_root(self.project_root) / "results" / "ai"
+        self.results_dir = history_results_dir(self.project_root) / "ai"
         self.results_dir.mkdir(parents=True, exist_ok=True)
         self.source_name = ""
         self.speaker_context: list[dict] = []
@@ -272,10 +273,12 @@ class AIProcessingPage(QWidget):
 
         actions = QHBoxLayout()
         self.task_combo = QComboBox()
-        self.task_combo.addItem("Исправить текст и пунктуацию", "clean")
         self.task_combo.addItem("Краткое содержание", "summary")
+        self.task_combo.addItem("Протокол речи / встречи", "meeting")
+        self.task_combo.addItem("Беседа с кандидатом", "interview")
+        self.task_combo.insertSeparator(3)
+        self.task_combo.addItem("Исправить текст и пунктуацию", "clean")
         self.task_combo.addItem("Подробный конспект", "detailed")
-        self.task_combo.addItem("Протокол встречи", "meeting")
         self.task_combo.addItem("Извлечь задачи и решения", "actions")
         self.task_combo.addItem("Сводка по каждому спикеру", "speaker_summary")
         self.task_combo.addItem("Кто что предложил / решил", "contributions")
@@ -312,6 +315,26 @@ class AIProcessingPage(QWidget):
         self.cancel_button.clicked.connect(self.cancel_processing)
         actions.addWidget(self.cancel_button)
         root.addLayout(actions)
+        self.interview_panel = QFrame()
+        self.interview_panel.setObjectName("panel")
+        interview_layout = QVBoxLayout(self.interview_panel)
+        interview_layout.setContentsMargins(10, 6, 10, 8)
+        interview_layout.setSpacing(5)
+        names = QHBoxLayout()
+        self.candidate_name = QLineEdit()
+        self.interviewer_name = QLineEdit()
+        for field, label in ((self.candidate_name, "К — имя кандидата"),
+                             (self.interviewer_name, "И — имя интервьюера")):
+            field.setPlaceholderText(label)
+            field.setAccessibleName(label)
+            field.setMaxLength(80)
+            names.addWidget(field, 1)
+        interview_layout.addLayout(names)
+        interview_hint = QLabel("Имена можно не вводить. В отчёте «?» отмечает реплики, которые нужно сверить с записью.")
+        interview_hint.setObjectName("mutedLabel")
+        interview_hint.setWordWrap(True)
+        interview_layout.addWidget(interview_hint)
+        root.addWidget(self.interview_panel)
         prompt_row = QHBoxLayout()
         prompt_row.addWidget(self.prompt_preset_combo)
         prompt_row.addWidget(self.save_prompt_button)
@@ -399,7 +422,7 @@ class AIProcessingPage(QWidget):
             self.model_combo.setCurrentText(settings.get('ai_local_model', 'local-model'))
         self.api_key_row_widget.setVisible(provider == 'api')
         self.base_url_edit.setEnabled(provider != 'builtin')
-        self.model_combo.setEnabled(provider != 'builtin')
+        self.model_combo.setEnabled(True)
         self._load_key_to_placeholder()
         self._refresh_provider_note()
 
@@ -407,11 +430,12 @@ class AIProcessingPage(QWidget):
         provider = self.provider_combo.currentData()
         self.api_key_row_widget.setVisible(provider == 'api')
         self.base_url_edit.setEnabled(provider != 'builtin')
-        self.model_combo.setEnabled(provider != 'builtin')
+        self.model_combo.setEnabled(True)
+        self.model_combo.clear()
+        self.model_combo.setEditable(provider != 'builtin')
         if provider == 'builtin':
-            from local_ai import MODEL
             self.base_url_edit.setText('Встроенный движок · без настройки сервера')
-            self.model_combo.setCurrentText(MODEL)
+            self._refresh_builtin_models(load_settings(self.project_root).get("ai_builtin_model"))
         elif provider == 'compatible':
             self.base_url_edit.setText('http://127.0.0.1:1234/v1')
             self.model_combo.setCurrentText('local-model')
@@ -426,9 +450,25 @@ class AIProcessingPage(QWidget):
     def _model_changed(self, *_):
         self._refresh_provider_note()
 
+    def _refresh_builtin_models(self, selected):
+        from local_ai import installed_models, model_label
+        previous_state = self.model_combo.blockSignals(True)
+        try:
+            self.model_combo.clear()
+            for name in installed_models():
+                self.model_combo.addItem(model_label(name), name)
+            self.model_combo.setCurrentIndex(max(0, self.model_combo.findData(selected)))
+        finally:
+            self.model_combo.blockSignals(previous_state)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.provider_combo.currentData() == "builtin":
+            self._refresh_builtin_models(self.model_combo.currentData())
+
     def _refresh_provider_note(self):
         notes = {
-            'builtin': 'GigaChat работает на этом компьютере. Первый ответ требует загрузки модели в память. Движок запускается автоматически.',
+            'builtin': 'Выберите встроенную или добавленную GGUF-модель. Обработка выполняется на этом компьютере. Первый ответ занимает больше времени.',
             'compatible': 'OpenAI-совместимый локальный сервер, например LM Studio или llama.cpp. Для сервера без авторизации ключ не нужен.',
             'local': 'Ollama: укажите точный тег установленной модели.',
             'api': 'Текст отправляется внешнему API только после подтверждения. Ключ хранится в хранилище Windows.',
@@ -458,7 +498,8 @@ class AIProcessingPage(QWidget):
                 import keyring
                 key = keyring.get_password('Spiker.AI', url) or ''
             except Exception: pass
-        return {'provider': provider, 'base_url': url, 'model': self.model_combo.currentText().strip(), 'api_key': key}
+        model = self.model_combo.currentData() if provider == "builtin" else self.model_combo.currentText().strip()
+        return {'provider': provider, 'base_url': url, 'model': str(model or ""), 'api_key': key}
 
     def save_ai_settings(self):
         config = self._provider_config()
@@ -470,6 +511,8 @@ class AIProcessingPage(QWidget):
             "ai_local_model": config["model"] if provider in {"local", "compatible"} else "qwen2.5:0.5b",
             "ai_api_model": config["model"] if provider == "api" else "gpt-4.1-mini",
         }
+        if provider == "builtin":
+            settings["ai_builtin_model"] = config["model"]
         save_settings(self.project_root, settings)
         key_status = ""
         if provider == "api" and self.api_key_edit.text().strip():
@@ -499,6 +542,14 @@ class AIProcessingPage(QWidget):
     def _models_found(self, models: list):
         current = self.model_combo.currentText().strip()
         provider = self.provider_combo.currentData()
+        if provider == "builtin":
+            previous = self.model_combo.currentData()
+            self._provider_changed()
+            idx = self.model_combo.findData(previous)
+            if idx >= 0:
+                self.model_combo.setCurrentIndex(idx)
+            self.status.setText(f"Локальных моделей доступно: {self.model_combo.count()}.")
+            return
         discovered = [str(model).strip() for model in models if str(model).strip()]
         if provider == "local":
             # Keep the common local tags selectable even when they are not installed yet.
@@ -541,6 +592,8 @@ class AIProcessingPage(QWidget):
             self.speaker_context = []
 
     def set_source_text(self, text: str, source_name: str = "", speaker_context=None):
+        self.candidate_name.clear()
+        self.interviewer_name.clear()
         self.source_name = source_name or ""
         self._source_loading = True
         self.source_editor.setPlainText(text or "")
@@ -554,18 +607,24 @@ class AIProcessingPage(QWidget):
             self.status.setText("Получен пустой текст. Вставьте расшифровку или импортируйте TXT.")
 
     def load_text_file(self):
-        results_root = get_user_data_root(self.project_root) / "results"
-        filename, _ = QFileDialog.getOpenFileName(self, "Открыть расшифровку", str(results_root), "Текст (*.txt *.md);;Все файлы (*.*)")
+        results_root = history_results_dir(self.project_root)
+        filename, _ = QFileDialog.getOpenFileName(self, "Открыть расшифровку", str(results_root), "Документы (*.txt *.md *.docx)")
         if not filename:
             return
         try:
-            text = Path(filename).read_text(encoding="utf-8-sig")
+            if Path(filename).suffix.casefold() == ".docx":
+                from docx import Document
+                text = "\n".join(paragraph.text for paragraph in Document(filename).paragraphs)
+            else:
+                from document_storage import read_text
+                text = read_text(Path(filename), encoding="utf-8-sig")
             self.set_source_text(text, filename)
-        except OSError as exc:
+        except Exception as exc:
             QMessageBox.warning(self, "Не удалось открыть файл", str(exc))
 
     def _task_changed(self, *_):
         current = self.task_combo.currentData()
+        self.interview_panel.setVisible(current == "interview")
         self.custom_instruction.setVisible(current in {"custom", "qa"})
         self.prompt_preset_combo.setVisible(current == "custom")
         self.save_prompt_button.setVisible(current == "custom")
@@ -591,7 +650,7 @@ class AIProcessingPage(QWidget):
         from urllib.parse import urlsplit
         external = config['provider'] != 'builtin' and urlsplit(config['base_url']).hostname not in {'localhost', '127.0.0.1', '::1'}
         if external:
-            answer = QMessageBox.question(self, "Отправить текст во внешний сервис?", "Вся исходная расшифровка или её фрагменты будут отправлены указанному API-провайдеру. Продолжить?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            answer = QMessageBox.question(self, "Отправить текст во внешний сервис?", f"Адрес сервера: {urlsplit(config['base_url']).hostname}\nРасшифровка или её фрагменты будут отправлены этому серверу. Продолжить?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
             if answer != QMessageBox.StandardButton.Yes:
                 return
         self.save_ai_settings()
@@ -606,6 +665,10 @@ class AIProcessingPage(QWidget):
             "task": self._last_task, "source_text": text,
             "custom_instruction": self.custom_instruction.text().strip(),
             "speaker_context": [dict(item) for item in self.speaker_context],
+            "interview_names": {
+                "candidate": self.candidate_name.text().strip(),
+                "interviewer": self.interviewer_name.text().strip(),
+            } if self._last_task == "interview" else None,
         }
         self._worker = AIWorker("process", config, job, self)
         self._worker.progress.connect(self._progress_update)
@@ -633,7 +696,8 @@ class AIProcessingPage(QWidget):
             base_name = sub(r"[^\w.-]+", "_", Path(self.source_name).stem if self.source_name else "transcript", flags=0).strip("._") or "transcript"
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             auto_path = self.results_dir / f"{base_name}_{self._last_task}_{stamp}.md"
-            auto_path.write_text(f"# {base_name} — результат ИИ\n\nМодель: {self.model_combo.currentText().strip()}\nРежим: {self._last_provider}\nДата: {datetime.now().astimezone().isoformat(timespec='seconds')}\n\n---\n\n{text}\n", encoding="utf-8", newline="")
+            from document_storage import write_text
+            write_text(auto_path, f"# {base_name} — результат ИИ\n\nМодель: {self.model_combo.currentText().strip()}\nРежим: {self._last_provider}\nДата: {datetime.now().astimezone().isoformat(timespec='seconds')}\n\n---\n\n{text}\n", encoding="utf-8", newline="")
             self._last_auto_path = str(auto_path)
             self.status.setText(f"Обработка завершена. Получено {len(text):,} символов. Автокопия: {auto_path.name}".replace(",", " "))
         except OSError as exc:
@@ -659,11 +723,17 @@ class AIProcessingPage(QWidget):
             QMessageBox.information(self, "Нет результата", "Сначала выполните обработку ИИ или введите результат вручную.")
             return
         default_stem = Path(self.source_name).stem if self.source_name else "Spiker_AI_result"
+        from app_paths import documents_folder
+        export_dir = documents_folder() / "Spiker" / "Экспорт"
+        export_dir.mkdir(parents=True, exist_ok=True)
         target, selected_filter = QFileDialog.getSaveFileName(
-            self, "Экспорт результата ИИ", str(self.results_dir / f"{default_stem}_ai.md"),
+            self, "Экспорт результата ИИ без шифрования", str(export_dir / f"{default_stem}_ai.md"),
             "Markdown (*.md);;Текст (*.txt);;JSON (*.json)"
         )
         if not target:
+            return
+        if Path(target).resolve().is_relative_to(self.results_dir.parent.resolve()):
+            QMessageBox.warning(self, "Выберите другую папку", "Папка внутренней истории защищена. Выберите «Экспорт» или любую другую папку.")
             return
         path = Path(target)
         try:

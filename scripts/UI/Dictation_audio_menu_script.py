@@ -3,7 +3,7 @@
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QSizePolicy, QTextEdit, QVBoxLayout, QComboBox, QProgressBar
+    QSizePolicy, QTextEdit, QVBoxLayout, QProgressBar, QComboBox
 )
 
 
@@ -53,12 +53,22 @@ class Ui_Dialog_dict_audio(object):
         top_row.addWidget(self.label_time_audio)
         control_layout.addLayout(top_row)
         device_row = QHBoxLayout()
-        device_row.addWidget(QLabel('Микрофон'))
+        self.microphone_label = QLabel('Микрофон')
+        self.microphone_label.setObjectName("mutedLabel")
+        self.microphone_label.setWordWrap(True)
+        self.microphone_label.setToolTip("Выберите вход Windows или конкретный микрофон. При подключении гарнитуры обновите список.")
+        device_row.addWidget(self.microphone_label)
         self.microphone_combo = QComboBox()
-        self.microphone_combo.setMinimumContentsLength(22)
+        self.microphone_combo.addItem("По умолчанию Windows", "")
+        self.microphone_combo.setAccessibleName("Устройство ввода")
+        self.microphone_combo.setMinimumWidth(125)
+        self.microphone_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         device_row.addWidget(self.microphone_combo, 1)
-        self.refresh_microphones = QPushButton('Обновить')
-        device_row.addWidget(self.refresh_microphones)
+        self.microphone_refresh = QPushButton("↻")
+        self.microphone_refresh.setToolTip("Обновить список после подключения гарнитуры")
+        self.microphone_refresh.setAccessibleName("Обновить список микрофонов")
+        self.microphone_refresh.setFixedWidth(40)
+        device_row.addWidget(self.microphone_refresh)
         self.microphone_level = QProgressBar()
         self.microphone_level.setRange(0, 100)
         self.microphone_level.setValue(0)

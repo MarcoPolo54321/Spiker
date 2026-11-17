@@ -191,6 +191,9 @@ class OptionalBackendTests(unittest.TestCase):
             model.mkdir(parents=True)
             self.assertIsNone(resolve_faster_model(root, "small"))
             (model / "config.json").write_text("{}", encoding="utf-8")
+            self.assertIsNone(resolve_faster_model(root, "small"))
+            (model / "model.bin").write_bytes(b"fixture")
+            (model / "tokenizer.json").write_text("{}", encoding="utf-8")
             self.assertEqual(resolve_faster_model(root, "small"), model.resolve())
 
 

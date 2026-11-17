@@ -4,12 +4,36 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 from pathlib import Path
 
 from app_paths import get_user_data_root
 
 LOGGER = logging.getLogger("spiker.models")
 VOSK_FOLDER_NAME = "vosk-model-small-ru-0.22"
+
+
+def local_models_dir(project_root: str | Path) -> Path:
+    return Path(project_root).resolve() / "models"
+
+
+def model_roots(project_root: str | Path, *, legacy_pack: bool = False):
+    """Yield the adjacent folder first; consult older installations only on demand."""
+    local = local_models_dir(project_root)
+    yield local
+    user_data = get_user_data_root(project_root)
+    legacy = user_data / "models"
+    if legacy != local:
+        yield legacy
+    if legacy_pack:
+        try:
+            pack = Path(json.loads((user_data / "data" / "model-pack.json").read_text(encoding="utf-8"))["root"])
+            if pack.is_absolute():
+                previous = pack / "models"
+                if previous not in (local, legacy):
+                    yield previous
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
 
 
 def resolve_vosk_model_path(project_root: str | Path) -> Path:
@@ -26,22 +50,22 @@ def resolve_vosk_model_path(project_root: str | Path) -> Path:
     root = Path(project_root).expanduser()
     if not root.is_absolute():
         root = root.resolve()
-    canonical = root / "models" / "vosk" / VOSK_FOLDER_NAME
-    user_model = get_user_data_root(root) / "models" / "vosk" / VOSK_FOLDER_NAME
+    canonical = local_models_dir(root) / "vosk" / VOSK_FOLDER_NAME
     legacy_root = root / "model"
     legacy = legacy_root / VOSK_FOLDER_NAME
 
     if canonical.exists():
         return canonical
+    user_model = get_user_data_root(root) / "models" / "vosk" / VOSK_FOLDER_NAME
     if user_model.exists():
         return user_model
     if not legacy.is_dir():
         return user_model
 
     try:
-        target = user_model if user_model != canonical else canonical
+        target = canonical
         target.parent.mkdir(parents=True, exist_ok=True)
-        # Use the writable user model directory when the install folder is protected.
+        # Keep the migrated model next to the application.
         legacy.rename(target)
         LOGGER.info("Migrated legacy Vosk model to canonical path: %s", target)
         try:

@@ -22,11 +22,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from app_paths import get_user_data_root
+from model_paths import local_models_dir
 from model_paths import native_model_path
 from archive_utils import safe_extract_zip
 ASSET_LOCK = json.loads((ROOT / "models" / "verified-assets.json").read_text(encoding="utf-8"))
-MODELS = get_user_data_root(ROOT) / "models"
+MODELS = local_models_dir(ROOT)
 WHISPER_DIR = MODELS / "whisper"
 WHISPER_FILE = WHISPER_DIR / "ggml-small.bin"
 WHISPER_BUNDLED_FILE = ROOT / "models" / "whisper" / "ggml-small.bin"

@@ -87,8 +87,8 @@ def prepare_media_audio(
 
     try:
         try:
-            import imageio_ffmpeg
-            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+            from media_tools import ffmpeg_executable
+            ffmpeg = ffmpeg_executable()
         except Exception as exc:
             raise RuntimeError(
                 "Не найден встроенный FFmpeg. Откройте «Обновить или восстановить библиотеки.bat» "

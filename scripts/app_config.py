@@ -22,10 +22,14 @@ def load_settings(project_root: Path) -> dict:
         "batch_size": 1, "vad_filter": True, "word_timestamps": True,
         "audio_normalize": False, "audio_profile": "speech", "audio_stream_index": 0,
         "context_terms": "", "diarization_enabled": True,
-        "speaker_min": 0, "speaker_max": 0, "show_speakers": True,
+        # Normal conversations usually have one or two voices. A zero minimum
+        # keeps monologues as one speaker; the default cap prevents runaway IDs.
+        "speaker_min": 0, "speaker_max": 2, "show_speakers": True,
+        "queue_model_fixed": False,
         "microphone_name": "", "ai_provider": "builtin", "ai_local_url": "http://127.0.0.1:11434/v1",
         "ai_local_model": "qwen2.5:0.5b", "ai_api_base_url": "https://api.openai.com/v1",
-        "ai_api_model": "gpt-4.1-mini",
+        "ai_api_model": "gpt-4.1-mini", "ai_builtin_model": "",
+        "queue_model_choice": "auto",
     }
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -57,15 +61,20 @@ def load_settings(project_root: Path) -> dict:
             for key in ("faster_whisper_model_path", "context_terms"):
                 if isinstance(raw.get(key), str):
                     defaults[key] = raw[key][:4000 if key == "context_terms" else 1000]
-            for key in ("vad_filter", "word_timestamps", "audio_normalize", "diarization_enabled", "show_speakers"):
+            for key in ("vad_filter", "word_timestamps", "audio_normalize", "diarization_enabled", "show_speakers", "queue_model_fixed"):
                 if isinstance(raw.get(key), bool):
                     defaults[key] = raw[key]
             for key, low, high in (("batch_size", 1, 32), ("speaker_min", 0, 20), ("speaker_max", 0, 20)):
                 if isinstance(raw.get(key), int):
-                    defaults[key] = max(low, min(high, raw[key]))
+                    value = max(low, min(high, raw[key]))
+                    # Migrate the old unbounded auto mode to the safer default
+                    # cap. Users can still set a larger limit explicitly.
+                    if key == "speaker_max" and value == 0:
+                        value = 2
+                    defaults[key] = value
             if raw.get("ai_provider") in {"local", "compatible", "builtin", "api"}:
                 defaults["ai_provider"] = raw["ai_provider"]
-            for key in ("microphone_name", "ai_local_url", "ai_local_model", "ai_api_base_url", "ai_api_model"):
+            for key in ("microphone_name", "ai_local_url", "ai_local_model", "ai_api_base_url", "ai_api_model", "ai_builtin_model", "queue_model_choice"):
                 if isinstance(raw.get(key), str) and raw[key].strip():
                     defaults[key] = raw[key].strip()
     except (OSError, json.JSONDecodeError):
@@ -124,7 +133,7 @@ def save_settings(project_root: Path, settings: dict) -> None:
         current["audio_stream_index"] = max(0, min(31, int(settings.get("audio_stream_index", current.get("audio_stream_index", 0)))))
     except (TypeError, ValueError):
         pass
-    for key in ("vad_filter", "word_timestamps", "audio_normalize", "diarization_enabled", "show_speakers"):
+    for key in ("vad_filter", "word_timestamps", "audio_normalize", "diarization_enabled", "show_speakers", "queue_model_fixed"):
         value = settings.get(key, current.get(key))
         if isinstance(value, bool):
             current[key] = value
@@ -133,7 +142,7 @@ def save_settings(project_root: Path, settings: dict) -> None:
             current[key] = max(low, min(high, int(settings.get(key, current.get(key, low)))))
         except (TypeError, ValueError):
             pass
-    for key in ("microphone_name", "ai_provider", "ai_local_url", "ai_local_model", "ai_api_base_url", "ai_api_model"):
+    for key in ("microphone_name", "ai_provider", "ai_local_url", "ai_local_model", "ai_api_base_url", "ai_api_model", "ai_builtin_model", "queue_model_choice"):
         value = settings.get(key, current.get(key))
         if key == "ai_provider" and value not in {"local", "compatible", "builtin", "api"}:
             continue

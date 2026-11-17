@@ -102,10 +102,10 @@ def _normal_base(url: str) -> str:
 
 
 def _validate_credential_transport(url: str, api_key: str) -> None:
-    """Never send a secret API key to a non-loopback HTTP endpoint."""
-    if not (api_key or "").strip():
-        return
+    """Ensure even unauthenticated external inference uses encrypted transport."""
     parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None:
+        raise ValueError("Укажите адрес ИИ-сервера HTTP/HTTPS без учётных данных в адресе.")
     if parsed.scheme.lower() == "https":
         return
     host = (parsed.hostname or "").lower().rstrip(".")
@@ -116,7 +116,12 @@ def _validate_credential_transport(url: str, api_key: str) -> None:
             return
     except ValueError:
         pass
-    raise ValueError("API-ключ можно отправлять только по HTTPS (или на локальный loopback-сервер).")
+    raise ValueError("Используйте HTTPS для внешнего сервера. HTTP допускается только для локального сервера на этом ПК.")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "Перенаправление запрещено. Укажите конечный адрес сервера.", headers, None)
 
 
 def _request_json_blocking(url: str, payload: dict | None = None, headers: dict | None = None,
@@ -130,9 +135,9 @@ def _request_json_blocking(url: str, payload: dict | None = None, headers: dict 
     try:
         local = urllib.parse.urlsplit(url).hostname in {'127.0.0.1', 'localhost', '::1'}
         if control is None:
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({})) if local else urllib.request.build_opener()
+            opener = urllib.request.build_opener(_NoRedirect(), *([urllib.request.ProxyHandler({})] if local else []))
         else:
-            handlers = [_CancelableHTTPHandler(control), _CancelableHTTPSHandler(control)]
+            handlers = [_NoRedirect(), _CancelableHTTPHandler(control), _CancelableHTTPSHandler(control)]
             if local:
                 handlers.insert(0, urllib.request.ProxyHandler({}))
             opener = urllib.request.build_opener(*handlers)
@@ -150,9 +155,12 @@ def _request_json_blocking(url: str, payload: dict | None = None, headers: dict 
             raw = b"".join(chunks).decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         try:
-            details = exc.read().decode("utf-8", errors="replace")[:1500]
-        except Exception:
-            details = str(exc)
+            error = exc.read(4096) if exc.fp else b""
+            marker = "exceed_context_size_error"
+            details = (marker if marker.encode() in error else
+                       "укажите конечный адрес сервера" if 300 <= exc.code < 400 else "проверьте параметры сервера и модели")
+        finally:
+            exc.close()
         raise RuntimeError(f"ИИ-провайдер вернул HTTP {exc.code}: {details}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Не удалось подключиться к ИИ-провайдеру: {getattr(exc, 'reason', exc)}") from exc
@@ -209,6 +217,7 @@ def _ollama_chat_endpoint(base_url: str) -> str:
 def list_local_models(base_url: str = "http://127.0.0.1:11434") -> list[str]:
     """Return locally installed Ollama model tags without downloading anything."""
     base = _normal_base(base_url)
+    _validate_credential_transport(base, "")
     base = base.removesuffix("/v1")
     data = _request_json(base + "/api/tags", timeout=8)
     models = data.get("models", [])
@@ -218,9 +227,8 @@ def list_local_models(base_url: str = "http://127.0.0.1:11434") -> list[str]:
 def probe_provider(provider: str, base_url: str, api_key: str = "") -> list[str]:
     provider = (provider or "local").lower()
     if provider == 'builtin':
-        from local_ai import model_path, MODEL
-        model_path()
-        return [MODEL]
+        from local_ai import installed_models
+        return installed_models()
     if provider == "local":
         return list_local_models(base_url)
     base = _normal_base(base_url)
@@ -232,13 +240,13 @@ def probe_provider(provider: str, base_url: str, api_key: str = "") -> list[str]
     return [str(item.get("id", "")).strip() for item in items if isinstance(item, dict) and item.get("id")]
 
 
-def chat_completion(provider: str, base_url: str, model: str, messages: list[dict], api_key: str = "", timeout: int = 900, max_tokens: int = 4096) -> str:
+def chat_completion(provider: str, base_url: str, model: str, messages: list[dict], api_key: str = "", timeout: int = 900, max_tokens: int = 4096, json_mode=False) -> str:
     provider = (provider or "local").lower()
     _context.builtin = provider == 'builtin'
     if provider == 'builtin':
         from local_ai import ensure_started, MODEL
-        base_url, api_key = ensure_started(getattr(_context, 'cancelled', None))
-        model = MODEL
+        model = model or MODEL
+        base_url, api_key = ensure_started(getattr(_context, 'cancelled', None), model)
         provider = 'compatible'
     _validate_credential_transport(base_url, api_key)
     if not model.strip():
@@ -257,6 +265,8 @@ def chat_completion(provider: str, base_url: str, model: str, messages: list[dic
                 "num_predict": max(256, min(int(max_tokens), 16384)),
             },
         }
+        if json_mode:
+            payload["format"] = "json"
         data = _request_json(_ollama_chat_endpoint(base_url), payload=payload, timeout=timeout)
         try:
             content = data["message"]["content"]
@@ -279,6 +289,9 @@ def chat_completion(provider: str, base_url: str, model: str, messages: list[dic
         "temperature": 0.2,
         "max_tokens": max(256, min(int(max_tokens), 16384)),
     }
+    if json_mode and _context.builtin:
+        payload["response_format"] = {"type": "json_object"}
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     data = _request_json(_chat_endpoint(base_url), payload=payload, headers={"Authorization": f"Bearer {key}"} if key else {}, timeout=timeout)
     try:
         content = data["choices"][0]["message"]["content"]
@@ -326,15 +339,27 @@ def split_text(text: str, max_chars: int = 12000) -> list[str]:
 def process_transcript(provider: str, base_url: str, model: str, api_key: str, task: str, source_text: str,
                        custom_instruction: str = "", progress: Callable[[int, str], None] | None = None,
                        cancelled: Callable[[], bool] | None = None,
-                       speaker_context: list[dict] | None = None) -> str:
+                       speaker_context: list[dict] | None = None,
+                       interview_names: dict | None = None) -> str:
     """Run text processing in chunks. Long input is summarized per chunk then synthesized."""
     _context.cancelled = cancelled
     source_text = (source_text or "").strip()
     if not source_text:
         raise ValueError("Нет исходного текста. Сначала загрузите расшифровку или вставьте текст.")
+    if task == "interview":
+        from interview_report import process_interview
+        try:
+            return process_interview(
+                source_text, interview_names, speaker_context,
+                lambda messages: chat_completion(provider, base_url, model, messages, api_key=api_key,
+                                                 max_tokens=1500, json_mode=True),
+                progress, cancelled,
+            )
+        finally:
+            _context.cancelled = None
     templates = {
         "clean": "Отредактируй расшифровку: исправь пунктуацию, очевидные ошибки распознавания и абзацы. Сохраняй смысл, факты, имена, числа и порядок событий. Не добавляй сведения. Если место неразборчиво или неоднозначно, явно отметь это. Верни только итоговый текст.",
-        "summary": "Составь краткое, информативное резюме исходной расшифровки на русском языке. Выдели главные темы, факты и выводы. Не добавляй факты, которых нет в источнике. Отмечай неопределённость.",
+        "summary": "Кратко перескажи, о чём говорили, на русском языке. Начни с главной темы, затем назови ключевые мысли и выводы в порядке беседы. Напиши один или два коротких абзаца, понятных без оригинала. Не добавляй отсутствующих в записи фактов.",
         "detailed": "Подготовь подробный структурированный конспект расшифровки на русском языке: заголовки, темы, ключевые тезисы, аргументы, факты и выводы. Не выдумывай и не приписывай говорящим слова, которых нет в источнике.",
         "meeting": "Оформи протокол встречи на русском языке: цель/контекст, обсуждённые вопросы, принятые решения, открытые вопросы и следующие шаги. Не придумывай участников, решения, сроки и ответственных. Если поле нельзя подтвердить по расшифровке, напиши «Не указано в записи».",
         "actions": "Извлеки из расшифровки конкретные задачи, решения, сроки и ответственных. Представь их таблицей с колонками: тип, содержание, ответственный, срок, цитата/основание. Не выводи ответственного или срок, если они не названы явно; используй «Не указано».",

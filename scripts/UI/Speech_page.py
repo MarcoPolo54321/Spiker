@@ -4,9 +4,28 @@ from pathlib import Path
 import shutil
 from PySide6.QtCore import QThread, Signal, QUrl, Qt
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QComboBox, QProgressBar, QFileDialog, QMessageBox, QFrame, QSlider, QSizePolicy
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QComboBox, QProgressBar, QFileDialog, QMessageBox, QFrame, QSlider, QSizePolicy, QDialog, QDialogButtonBox
 from app_paths import get_user_data_root
-from speech_synthesis import VOICES, synthesize
+from speech_synthesis import VOICES, prepare_diction, synthesize
+
+
+class DictionWorker(QThread):
+    ready = Signal(str)
+    failed = Signal(str)
+    progress = Signal(int, int)
+
+    def __init__(self, source, model, parent):
+        super().__init__(parent)
+        self.source = source
+        self.model = model
+
+    def run(self):
+        try:
+            result = prepare_diction(self.source, self.model, self.isInterruptionRequested, self.progress.emit)
+            if not self.isInterruptionRequested():
+                self.ready.emit(result)
+        except Exception as exc:
+            self.failed.emit("Подготовка отменена." if self.isInterruptionRequested() else str(exc))
 
 class SpeechWorker(QThread):
     progress = Signal(int)
@@ -109,11 +128,25 @@ class SpeechPage(QWidget):
         self.load_button.setProperty('role', 'tertiary')
         self.load_button.clicked.connect(self.import_text)
         file_row.addWidget(self.load_button)
+        self.diction_button = QPushButton('Подготовить дикцию с ИИ…')
+        self.diction_button.setProperty('role', 'secondary')
+        self.diction_button.setToolTip('Встроенный ИИ предложит паузы, пунктуацию и ударения. Проверьте текст перед озвучкой.')
+        self.diction_button.clicked.connect(self.start_diction)
+        file_row.addWidget(self.diction_button)
         file_row.addStretch(1)
         self.input_count = QLabel('0 символов')
         self.input_count.setObjectName('mutedLabel')
         file_row.addWidget(self.input_count)
         control_layout.addLayout(file_row)
+        ai_row = QHBoxLayout()
+        ai_label = QLabel("Модель для подготовки речи")
+        self.diction_model = QComboBox()
+        ai_label.setBuddy(self.diction_model)
+        self.diction_model.setAccessibleName(ai_label.text())
+        ai_row.addWidget(ai_label)
+        ai_row.addWidget(self.diction_model, 1)
+        control_layout.addLayout(ai_row)
+        self.refresh_diction_models()
         dialogue_hint = QLabel('Для диалога укажите реплики строками «Спикер 1: …» и «Спикер 2: …» — голоса переключатся автоматически.')
         dialogue_hint.setObjectName('mutedLabel')
         dialogue_hint.setWordWrap(True)
@@ -162,6 +195,85 @@ class SpeechPage(QWidget):
     def _update_input_count(self):
         count = len(self.editor.toPlainText())
         self.input_count.setText(f'{count:,} символов'.replace(',', ' '))
+
+    def refresh_diction_models(self):
+        from local_ai import LIGHT_MODEL, installed_models, model_label
+        current = self.diction_model.currentData()
+        self.diction_model.clear()
+        for model in sorted(installed_models(), key=lambda name: name != LIGHT_MODEL):
+            self.diction_model.addItem(model_label(model), model)
+        if not self.diction_model.count():
+            self.diction_model.addItem("Нет локальных моделей", None)
+        self.diction_model.setCurrentIndex(max(0, self.diction_model.findData(current)))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.worker is None:
+            self.refresh_diction_models()
+
+    def start_diction(self):
+        if self.worker is not None:
+            return
+        source = self.editor.toPlainText()
+        if not source.strip():
+            self.status.setText('Введите текст.')
+            return
+        model = self.diction_model.currentData()
+        if not model:
+            self.status.setText('Установите модель ИИ. Ссылки есть в Настройках → «Где скачать модели».')
+            return
+        self.worker = DictionWorker(source, model, self)
+        self.worker.ready.connect(self.preview_diction)
+        self.worker.failed.connect(self.status.setText)
+        self.worker.finished.connect(self.finished)
+        self.worker.progress.connect(self._diction_progress)
+        self.diction_button.setEnabled(False)
+        self.diction_model.setEnabled(False)
+        self.editor.setReadOnly(True)
+        self.load_button.setEnabled(False)
+        self.generate.setEnabled(False)
+        self.cancel.setEnabled(True)
+        self.progress.setRange(0, 0)
+        self.status.setText(f'Готовим дикцию: {self.diction_model.currentText()}…')
+        self.worker.start()
+
+    def _diction_progress(self, done, total):
+        self.progress.setRange(0, max(1, total))
+        self.progress.setValue(done)
+        self.status.setText(f'Готовим дикцию: фрагмент {min(done + 1, total)} из {total}.')
+
+    def preview_diction(self, result):
+        if not self.worker or self.worker.isInterruptionRequested():
+            return
+        if not self.isVisible():
+            self.status.setText('Подготовка завершилась после ухода со страницы. Текст сохранён без изменений.')
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Проверка текста для озвучки')
+        dialog.resize(640, 420)
+        layout = QVBoxLayout(dialog)
+        from speech_synthesis import ACUTE
+        marks = result.count(ACUTE)
+        description = QLabel(
+            f'Отмечено ударений: {marks}. Знак над гласной задаёт подсказку диктору: за́мок, замо́к. '
+            'Отредактируйте спорные слова. Знаки препинания и пустые строки создают разные паузы.'
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+        preview = QTextEdit()
+        preview.setPlainText(result)
+        layout.addWidget(preview, 1)
+        buttons = QDialogButtonBox()
+        buttons.addButton('Применить к озвучке', QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.addButton('Оставить исходный текст', QDialogButtonBox.ButtonRole.RejectRole)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec():
+            self.editor.setPlainText(preview.toPlainText())
+            self.status.setText('Текст подготовлен. Нажмите «Озвучить» для прослушивания.')
+        else:
+            self.status.setText('Текст остался без изменений.')
     def import_text(self):
         name, _ = QFileDialog.getOpenFileName(self, 'Открыть текст', '', 'Текст (*.txt *.md *.docx)')
         if not name: return
@@ -185,6 +297,7 @@ class SpeechPage(QWidget):
         self.worker.progress.connect(self.progress.setValue); self.worker.ready.connect(self.done)
         self.worker.failed.connect(self.status.setText); self.worker.finished.connect(self.finished)
         self.generate.setEnabled(False); self.cancel.setEnabled(True); self.progress.setValue(0)
+        self.diction_button.setEnabled(False)
         self.status.setText('Готовим голос и озвучиваем текст…'); self.worker.start()
     def stop_generation(self):
         if self.worker: self.worker.requestInterruption()
@@ -193,7 +306,14 @@ class SpeechPage(QWidget):
         self.audio_path = Path(path); self.play.setEnabled(True); self.export.setEnabled(True)
         self.status.setText('Готово: ' + path)
     def finished(self):
+        self.diction_model.setEnabled(True)
+        self.editor.setReadOnly(False)
+        self.load_button.setEnabled(True)
         self.generate.setEnabled(True); self.cancel.setEnabled(False)
+        self.diction_button.setEnabled(True)
+        if self.progress.maximum() == 0:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
         self.worker.deleteLater(); self.worker = None
     def play_audio(self):
         if self.audio_path:
@@ -212,12 +332,12 @@ class SpeechPage(QWidget):
                 target = target.with_suffix('.mp3')
             try:
                 import subprocess
-                import imageio_ffmpeg
+                from media_tools import ffmpeg_executable, hidden_process_options
                 subprocess.run(
-                    [imageio_ffmpeg.get_ffmpeg_exe(), '-y', '-i', str(self.audio_path),
+                    [ffmpeg_executable(), '-y', '-i', str(self.audio_path),
                      '-vn', '-codec:a', 'libmp3lame', '-qscale:a', '3', str(target)],
                     check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                    **hidden_process_options(),
                 )
             except Exception as exc:
                 QMessageBox.warning(self, 'Не удалось сохранить MP3', str(exc))

@@ -2,7 +2,7 @@
 """Shared visual theme for Spiker Qt pages."""
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QLabel, QLineEdit, QTextEdit, QPlainTextEdit, QPushButton, QWidget
+from PySide6.QtWidgets import QLabel, QLineEdit, QTextEdit, QPlainTextEdit, QPushButton, QWidget, QComboBox, QListView
 
 APP_STYLESHEET = r"""
 QWidget { font-family: "Segoe UI", "Arial"; color: #F5FAFF; font-size: 10pt; }
@@ -118,7 +118,10 @@ QAbstractItemView {
     selection-background-color: #1265E8;
     selection-color: #FFFFFF;
 }
-QAbstractItemView::item { min-height: 28px; padding: 6px 9px; border-bottom: 1px solid rgba(114, 173, 243, 25); }
+QAbstractItemView::item { min-height: 30px; padding: 5px 10px; border: none; }
+QComboBox QAbstractItemView { background-color: #0B235B; color: #F5FAFF; border: 1px solid #4389C7; selection-background-color: #1265E8; selection-color: #FFFFFF; outline: 0; }
+QComboBox QAbstractItemView::item { min-height: 30px; padding: 5px 10px; border: none; color: #F5FAFF; }
+QComboBox QAbstractItemView::item:selected { background-color: #1265E8; color: #FFFFFF; }
 QAbstractItemView::item:hover { background: rgba(22, 101, 232, 110); }
 QLabel#aiFieldLabel { color: #BFE8FF; font-size: 8.5pt; font-weight: 650; }
 QLabel#helpAuthor { color: #90BAE9; font-size: 9pt; font-weight: 600; padding: 4px 3px; }
@@ -143,6 +146,16 @@ def apply_window_theme(window):
     """Remove legacy per-widget gradients/styles so the shared theme can apply consistently."""
     for widget in [window, *window.findChildren(QWidget)]:
         widget.setStyleSheet("")
+        if isinstance(widget, QComboBox):
+            # A styled item view avoids Windows native grey popup bleed-through.
+            view = widget.view()
+            if isinstance(view, QListView):
+                view.setUniformItemSizes(True)
+            view.setAutoFillBackground(True)
+            view.setAlternatingRowColors(False)
+            widget.setMaxVisibleItems(10)
+            widget.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            widget.setMinimumContentsLength(max(12, widget.minimumContentsLength()))
         if isinstance(widget, QPushButton):
             if "back_to_main" in widget.objectName():
                 widget.setProperty("role", "back")
@@ -214,30 +227,8 @@ QLabel#helpIllustration { background: transparent; }
 QLabel#helpCardTitle { color: #F4F8FF; font-size: 13pt; font-weight: 650; }
 QLabel#helpCardDescription { color: #C1D5F2; font-size: 9.5pt; }
 QFrame#helpImageCard { min-width: 150px; }
-/* User guide: translucent app-blue surface; never use the native gray text viewport. */
-QWidget#userGuidePage, QWidget#userGuideTabPage { background: transparent; }
-QTabWidget#userGuideTabs::pane {
-    background: transparent;
-    border: 1px solid rgba(114, 173, 243, 65);
-    border-radius: 12px;
-    top: -1px;
-}
-QTabWidget#userGuideTabs QTabBar::tab {
-    background: rgba(9, 39, 95, 175);
-    color: #C7D9F2;
-    border: 1px solid rgba(125, 169, 220, 80);
-    border-bottom: none;
-    padding: 9px 15px;
-    margin-right: 3px;
-    border-top-left-radius: 7px;
-    border-top-right-radius: 7px;
-}
-QTabWidget#userGuideTabs QTabBar::tab:selected {
-    background: rgba(18, 60, 123, 185);
-    color: #FFFFFF;
-    border-top: 2px solid #72E8FF;
-}
-QTabWidget#userGuideTabs QTabBar::tab:hover:!selected { background: rgba(16, 51, 108, 190); }
+QWidget#userGuidePage, QWidget#guideCards { background: transparent; }
+QLabel#guideInstruction { background: transparent; color: #EDF7FF; font-size: 10pt; }
 QWidget#settingsPage QPushButton {
     background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
         stop:0 rgba(38, 139, 225, 245), stop:0.52 rgba(48, 172, 234, 245), stop:1 rgba(87, 208, 246, 245));
@@ -255,8 +246,6 @@ QFrame#userGuideContentPanel {
     border: 1px solid rgba(114, 232, 255, 58);
     border-radius: 13px;
 }
-QTextBrowser#userGuideText { background: transparent; color: #F5FAFF; border: none; }
-QTextBrowser#userGuideText QWidget { background: transparent; }
 QFrame#helpInfoPanel {
     background: rgba(16, 41, 87, 206);
     border: 1px solid rgba(49, 95, 147, 175);
@@ -361,6 +350,7 @@ QCheckBox::indicator:checked, QRadioButton::indicator:checked {
 }
 QGroupBox { color: #D8EAFF; border: 1px solid rgba(114, 173, 243, 70); border-radius: 10px; margin-top: 14px; padding: 10px; }
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #BFE8FF; }
+QLabel#queueTrackTitle { color: #F5FAFF; font-size: 16px; font-weight: 650; }
 QTextBrowser { background: rgba(4, 19, 58, 225); color: #F5FAFF; border: 1px solid rgba(114, 173, 243, 90); border-radius: 10px; padding: 9px; selection-background-color: #1265E8; }
 QComboBox#modelCombo QAbstractItemView {
     background: #0B235B; color: #F5FAFF;

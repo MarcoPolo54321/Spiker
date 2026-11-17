@@ -9,8 +9,6 @@ import shutil
 import time
 import math
 import struct
-import subprocess
-import tempfile
 import threading
 import hashlib
 import uuid
@@ -23,12 +21,13 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QFrame, QSplitter, QComboBox,
     QTableWidget, QTableWidgetItem, QTextEdit, QFileDialog, QMessageBox,
     QHeaderView, QProgressBar, QAbstractItemView, QSizePolicy, QSlider,
-    QDialog, QDialogButtonBox, QInputDialog, QTabWidget, QSpinBox,
+    QDialog, QDialogButtonBox, QInputDialog, QTabWidget, QSpinBox, QMenu, QWidgetAction, QCheckBox,
 )
 
 from app_config import atomic_write_json, load_settings, save_settings
-from app_paths import get_user_data_root
+from app_paths import get_user_data_root, history_data_dir, history_results_dir
 from queue_store import QueueStore
+from document_storage import read_text as read_document, write_text as write_document, write_json as write_document_json
 from subtitle_export import render_subtitles as _render_subtitles
 from transcription.transcript_render import render_transcript_segments, speaker_summary
 
@@ -45,6 +44,33 @@ STATUS_LABELS = {
     "cancelled": "Отменено",
     "paused": "Приостановлено",
 }
+
+class SingleLineLabel(QLabel):
+    """Keep long filenames and statuses from consuming the transcript area."""
+    def __init__(self, text=""):
+        super().__init__()
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setText(text)
+
+    def setText(self, text):
+        self._full_text = text
+        self.setToolTip(text)
+        self._elide()
+
+    def clear(self):
+        self.setText("")
+
+    def _elide(self):
+        visible = self.fontMetrics().elidedText(
+            self._full_text, Qt.TextElideMode.ElideRight, max(0, self.contentsRect().width()),
+        )
+        if super().text() != visible:
+            super().setText(visible)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._elide()
+
 
 def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
@@ -181,8 +207,8 @@ class SpeakerDiarizationWorker(QThread):
                 self.segments,
                 self.project_root,
                 hf_token=os.environ.get("HF_TOKEN", ""),
-                min_speakers=(self.speaker_count or settings.get("speaker_min") or None),
-                max_speakers=(self.speaker_count or settings.get("speaker_max") or None),
+                min_speakers=(self.speaker_count or None),
+                max_speakers=(self.speaker_count or 2),
                 device=settings.get("compute_device", "auto"),
                 stage_callback=lambda message: self.progress.emit(str(message)),
                 cancel_callback=self._is_cancelled,
@@ -401,7 +427,7 @@ class WaveformWidget(QWidget):
 
 
 class WaveformExtractor(QThread):
-    """Streaming FFmpeg PCM extractor with file-fingerprint cache; never buffers the whole audio."""
+    """Decode the preview with PyAV inside the application process."""
     audio_stream_detected = Signal(str)
     completed = Signal(str, object, int, str)  # path, amplitudes, duration_ms, cache_key
     failed = Signal(str, str)
@@ -416,18 +442,9 @@ class WaveformExtractor(QThread):
         self.cache_dir = Path(cache_dir)
         self.force = bool(force)
         self._cancel_event = threading.Event()
-        self._process = None
-        self._process_guard = threading.RLock()
 
     def cancel(self):
         self._cancel_event.set()
-        with self._process_guard:
-            process = self._process
-        if process is not None and process.poll() is None:
-            try:
-                process.terminate()
-            except OSError:
-                pass
 
     def _fingerprint(self) -> tuple[str, Path, int]:
         source = Path(self.source_path)
@@ -469,7 +486,6 @@ class WaveformExtractor(QThread):
             return False
 
     def run(self):
-        process = None
         try:
             source = Path(self.source_path)
             if not source.is_file():
@@ -480,68 +496,42 @@ class WaveformExtractor(QThread):
             if not self.force and self._emit_cached(cache_path, cache_key):
                 return
 
-            import imageio_ffmpeg
-            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-            cmd = [
-                ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
-                "-i", self.source_path, "-map", "0:a:0", "-vn", "-ac", "1",
-                "-ar", str(self.SAMPLE_RATE), "-f", "s16le", "pipe:1",
-            ]
-            create_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-            bars: list[float] = []
+            import av
+            bars = []
             sample_count = 0
-            stream_announced = False
             sample_bytes = self.SAMPLE_RATE * 2 * self.BUCKET_MS // 1000
             pending = bytearray()
-            with tempfile.TemporaryFile(mode="w+b") as err_stream:
-                process = subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=err_stream,
-                    stdin=subprocess.DEVNULL, creationflags=create_flags,
-                )
-                with self._process_guard:
-                    self._process = process
-                assert process.stdout is not None
-                while True:
+
+            def append(frame):
+                nonlocal sample_count
+                data = frame.to_ndarray().tobytes()
+                sample_count += len(data) // 2
+                pending.extend(data)
+                for offset in range(0, len(pending) - sample_bytes + 1, sample_bytes):
+                    bars.append(self._rms(pending[offset:offset + sample_bytes]))
+                remainder = len(pending) % sample_bytes
+                if len(pending) >= sample_bytes:
+                    del pending[:len(pending) - remainder]
+
+            with av.open(self.source_path, mode="r", timeout=(5, 5)) as container:
+                if not container.streams.audio:
+                    raise RuntimeError("В файле не найдена аудиодорожка.")
+                resampler = av.AudioResampler(format="s16", layout="mono", rate=self.SAMPLE_RATE)
+                announced = False
+                for frame in container.decode(container.streams.audio[0]):
                     if self._cancel_event.is_set():
-                        process.terminate()
-                        try:
-                            process.wait(timeout=2)
-                        except subprocess.TimeoutExpired:
-                            process.kill()
-                            process.wait()
-                        raise InterruptedError("Анализ аудиодорожки отменён.")
-                    # read1() returns whatever FFmpeg has produced in one underlying read.
-                    # Buffered read(64 KiB) could delay stream detection by several seconds.
-                    data = process.stdout.read1(8192) if hasattr(process.stdout, "read1") else process.stdout.read(8192)
-                    if not data:
-                        break
-                    if not stream_announced:
+                        return
+                    if not announced:
                         self.audio_stream_detected.emit(self.source_path)
-                        stream_announced = True
-                    pending.extend(data)
-                    # Fixed 100 ms slices give a stable timeline independent of pipe read sizes.
-                    while len(pending) >= sample_bytes:
-                        block = bytes(pending[:sample_bytes])
-                        del pending[:sample_bytes]
-                        bars.append(self._rms(block))
-                        sample_count += sample_bytes // 2
-                if pending:
-                    usable = len(pending) - (len(pending) % 2)
-                    if usable:
-                        bars.append(self._rms(bytes(pending[:usable])))
-                        sample_count += usable // 2
-                code = process.wait()
-                err_stream.seek(0)
-                stderr_data = err_stream.read()
-            with self._process_guard:
-                self._process = None
+                        announced = True
+                    for sampled in resampler.resample(frame):
+                        append(sampled)
+                for sampled in resampler.resample(None):
+                    append(sampled)
+            if pending:
+                bars.append(self._rms(pending))
             if self._cancel_event.is_set():
                 return
-            if code != 0:
-                detail = stderr_data.decode("utf-8", errors="replace").strip()
-                if "matches no streams" in detail.lower() or "does not contain any stream" in detail.lower():
-                    raise RuntimeError("В видео не найдена аудиодорожка.")
-                raise RuntimeError(detail[-1500:] or f"FFmpeg завершился с кодом {code}.")
             if not bars or sample_count <= 0:
                 raise RuntimeError("Не удалось извлечь аудиодорожку. Файл может не содержать звук.")
             duration_ms = int(sample_count * 1000 / self.SAMPLE_RATE)
@@ -565,18 +555,6 @@ class WaveformExtractor(QThread):
         except InterruptedError:
             return
         except Exception as exc:
-            if process is not None and process.poll() is None:
-                try:
-                    process.terminate()
-                    process.wait(timeout=2)
-                except Exception:
-                    try:
-                        process.kill()
-                        process.wait()
-                    except Exception:
-                        pass
-            with self._process_guard:
-                self._process = None
             logging.getLogger("processing.audio").warning("Waveform extraction failed for %s: %s",
                                                           self.source_path, exc)
             if not self._cancel_event.is_set():
@@ -602,17 +580,22 @@ class PlayerControls(QWidget):
         self.setObjectName("playerControls")
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 4, 0, 0)
-        root.setSpacing(7)
+        root.setSpacing(4)
 
         row = QHBoxLayout()
-        row.setSpacing(7)
+        row.setSpacing(5)
         self.back10_button = QPushButton("−10 с")
         self.back10_button.setProperty("role", "tertiary")
         self.back10_button.setToolTip("Перемотать на 10 секунд назад")
-        self.play_button = QPushButton("▶  Воспроизвести")
+        self.play_button = QPushButton("▶")
         self.play_button.setProperty("role", "primary")
-        self.stop_button = QPushButton("■  Стоп")
+        self.stop_button = QPushButton("■")
         self.stop_button.setProperty("role", "tertiary")
+        self.stop_button.setToolTip("Остановить и вернуться к началу")
+        self.stop_button.setAccessibleName("Остановить")
+        for button in (self.play_button, self.stop_button):
+            button.setFixedWidth(42)
+        self.set_playing(False)
         self.forward10_button = QPushButton("+10 с")
         self.forward10_button.setProperty("role", "tertiary")
         self.jump_combo = QComboBox()
@@ -622,49 +605,57 @@ class PlayerControls(QWidget):
         self.jump_combo.setCurrentIndex(1)
         self.jump_seconds = 10
         row.addWidget(self.back10_button)
-        row.addWidget(self.play_button, 1)
+        row.addWidget(self.play_button)
         row.addWidget(self.stop_button)
         row.addWidget(self.forward10_button)
-        row.addWidget(self.jump_combo)
 
         self.time_label = QLabel("00:00 / 00:00")
         self.time_label.setObjectName("playerTime")
-        self.time_label.setMinimumWidth(104)
+        self.time_label.setMinimumWidth(102)
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        row.addWidget(self.time_label)
-
-        root.addLayout(row)
 
         timeline_row = QHBoxLayout()
-        timeline_row.setSpacing(8)
+        timeline_row.setSpacing(5)
         self.seek_slider = QSlider(Qt.Orientation.Horizontal)
         self.seek_slider.setObjectName("playerSeekSlider")
         self.seek_slider.setRange(0, 0)
         timeline_row.addWidget(self.seek_slider, 1)
+        timeline_row.addWidget(self.time_label)
 
-        volume_label = QLabel("Громкость")
-        volume_label.setObjectName("mutedLabel")
-        timeline_row.addWidget(volume_label)
+        self.options_button = QPushButton("Настройки")
+        self.options_button.setAccessibleName("Настройки плеера")
+        self.options_button.setProperty("role", "tertiary")
+        self.options_button.setToolTip("Громкость, скорость и шаг перемотки")
+        options = QMenu(self.options_button)
+        self.options_button.setMenu(options)
+        row.addLayout(timeline_row, 1)
+        row.addWidget(self.options_button)
+        options_panel = QWidget(options)
+        options_panel.setMinimumWidth(222)
+        options_layout = QVBoxLayout(options_panel)
+        options_layout.setContentsMargins(12, 8, 12, 8)
+        options_layout.addWidget(QLabel("Громкость"))
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setObjectName("playerVolumeSlider")
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(78)
-        self.volume_slider.setMaximumWidth(100)
         self.volume_slider.setToolTip("Громкость воспроизведения")
-        timeline_row.addWidget(self.volume_slider)
+        options_layout.addWidget(self.volume_slider)
 
-        speed_label = QLabel("Скорость")
-        speed_label.setObjectName("mutedLabel")
-        timeline_row.addWidget(speed_label)
+        options_layout.addWidget(QLabel("Скорость"))
         self.speed_combo = QComboBox()
         self.speed_combo.setObjectName("playerSpeedCombo")
         for rate, label in ((0.5, "0,5×"), (0.75, "0,75×"), (1.0, "1×"), (1.25, "1,25×"),
                             (1.5, "1,5×"), (1.75, "1,75×"), (2.0, "2×")):
             self.speed_combo.addItem(label, rate)
         self.speed_combo.setCurrentIndex(2)
-        self.speed_combo.setMaximumWidth(90)
-        timeline_row.addWidget(self.speed_combo)
-        root.addLayout(timeline_row)
+        options_layout.addWidget(self.speed_combo)
+        options_layout.addWidget(QLabel("Шаг перемотки"))
+        options_layout.addWidget(self.jump_combo)
+        options_item = QWidgetAction(options)
+        options_item.setDefaultWidget(options_panel)
+        options.addAction(options_item)
+        root.addLayout(row)
 
         self.back10_button.clicked.connect(self.back10Clicked)
         self.play_button.clicked.connect(self.playPauseClicked)
@@ -688,7 +679,10 @@ class PlayerControls(QWidget):
             widget.setEnabled(enabled)
 
     def set_playing(self, playing: bool):
-        self.play_button.setText("Ⅱ  Пауза" if playing else "▶  Воспроизвести")
+        self.play_button.setText("Ⅱ" if playing else "▶")
+        label = "Пауза" if playing else "Воспроизвести"
+        self.play_button.setToolTip(label)
+        self.play_button.setAccessibleName(label)
 
 
 class QueuePage(QWidget):
@@ -705,12 +699,12 @@ class QueuePage(QWidget):
         self.project_root = Path(project_root)
         self.worker_factory = worker_factory
         self.on_back = on_back
-        self.data_dir = get_user_data_root(self.project_root) / "data"
+        self.data_dir = history_data_dir(self.project_root)
         self.queue_file = self.data_dir / "queue.json"  # legacy import/export backup
         self.queue_db_file = self.data_dir / "queue.db"
         self.queue_store = QueueStore(self.queue_db_file)
         self._last_queue_json_backup = 0.0
-        self.results_dir = get_user_data_root(self.project_root) / "results"
+        self.results_dir = history_results_dir(self.project_root)
         self.results_dir.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.tasks: list[dict] = []
@@ -726,6 +720,7 @@ class QueuePage(QWidget):
         self._speaker_worker = None
         self.active_task_id = None
         self.queue_running = False
+        self._runnable_statuses = {"queued", "paused"}
         self.cancel_requested = False
         self.stop_requested = False
         self.discard_requested = False
@@ -739,8 +734,8 @@ class QueuePage(QWidget):
         self.setAcceptDrops(True)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(28, 22, 28, 24)
-        root.setSpacing(14)
+        root.setContentsMargins(22, 14, 22, 14)
+        root.setSpacing(9)
 
         header = QHBoxLayout()
         self.back_button = QPushButton("←  Назад")
@@ -779,11 +774,11 @@ class QueuePage(QWidget):
         controls_grid = QGridLayout()
         controls_grid.setHorizontalSpacing(6)
         controls_grid.setVerticalSpacing(6)
-        self.add_button = QPushButton("＋ Добавить")
+        self.add_button = QPushButton("Добавить")
         self.add_button.setProperty("role", "primary")
         self.add_button.clicked.connect(self.add_files_dialog)
         controls_grid.addWidget(self.add_button, 0, 0)
-        self.start_button = QPushButton("▶ Очередь")
+        self.start_button = QPushButton("Запустить очередь")
         self.start_button.setProperty("role", "secondary")
         self.start_button.setToolTip("Запустить новые задачи и продолжить приостановленные с сохранённого сегмента.")
         self.start_button.clicked.connect(self.start_queue)
@@ -818,19 +813,31 @@ class QueuePage(QWidget):
         controls_grid.addWidget(self.remove_button, 3, 0, 1, 2)
         left_layout.addLayout(controls_grid)
 
-        model_label = QLabel("МОДЕЛЬ РАСПОЗНАВАНИЯ")
+        model_label = QLabel("МОДЕЛЬ ПО УМОЛЧАНИЮ")
         model_label.setObjectName("sectionLabel")
         left_layout.addWidget(model_label)
         self.file_model_combo = QComboBox()
         self.file_model_combo.setObjectName("modelCombo")
-        self.file_model_combo.setMinimumHeight(38)
         self.file_model_combo.setToolTip(
             "Small быстрее и требует меньше памяти; Medium обычно точнее, но тяжелее. "
             "Whisper.cpp Small — отдельный формат GGML для автоматического резервного режима."
         )
         left_layout.addWidget(self.file_model_combo)
+        self.fixed_model_checkbox = QCheckBox("Одна модель для всей очереди")
+        self.fixed_model_checkbox.setChecked(load_settings(self.project_root).get("queue_model_fixed", False))
+        self.fixed_model_checkbox.setToolTip("Для новых запусков использовать модель по умолчанию, игнорируя выбор для отдельных файлов.")
+        left_layout.addWidget(self.fixed_model_checkbox)
+        self.task_model_label = QLabel("Модель выбранного файла")
+        self.task_model_label.setObjectName("mutedLabel")
+        self.task_model_combo = QComboBox()
+        self.task_model_combo.setObjectName("modelCombo")
+        self.task_model_combo.setAccessibleName("Модель выбранного файла")
+        left_layout.addWidget(self.task_model_label)
+        left_layout.addWidget(self.task_model_combo)
         self._populate_file_model_choices()
         self.file_model_combo.currentIndexChanged.connect(self._save_file_model_choice)
+        self.task_model_combo.currentIndexChanged.connect(self._save_task_model_choice)
+        self.fixed_model_checkbox.toggled.connect(self._save_fixed_model)
 
         # Keep the status visible even in a narrow left pane. Duration, size and format
         # remain available in the selected-file metadata and the file tooltip.
@@ -847,7 +854,7 @@ class QueuePage(QWidget):
         header_view.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(1, 116)
         self.table.setMinimumWidth(220)
-        self.table.setMinimumHeight(240)
+        self.table.setMinimumHeight(105)
         self.table.itemSelectionChanged.connect(self._selection_changed)
         self.table.cellDoubleClicked.connect(self.open_selected_source)
         left_layout.addWidget(self.table, 1)
@@ -857,32 +864,33 @@ class QueuePage(QWidget):
         self.player_panel = QFrame()
         self.player_panel.setObjectName("panel")
         player_layout = QVBoxLayout(self.player_panel)
-        player_layout.setContentsMargins(16, 14, 16, 14)
-        player_layout.setSpacing(10)
+        player_layout.setContentsMargins(12, 10, 12, 10)
+        player_layout.setSpacing(5)
 
         title_row = QHBoxLayout()
         title_stack = QVBoxLayout()
         title_stack.setSpacing(3)
-        self.player_title = QLabel("Выберите файл")
-        self.player_title.setObjectName("dialogTitle")
-        self.player_title.setWordWrap(True)
-        self.player_metadata = QLabel("Длительность · Размер · Формат")
+        self.player_title = SingleLineLabel("Выберите файл")
+        self.player_title.setObjectName("queueTrackTitle")
+        self.player_metadata = SingleLineLabel("Длительность · Размер · Формат")
         self.player_metadata.setObjectName("mutedLabel")
-        self.player_metadata.setWordWrap(True)
         title_stack.addWidget(self.player_title)
         title_stack.addWidget(self.player_metadata)
         title_row.addLayout(title_stack, 1)
-        self.waveform_button = QPushButton("Обновить волну")
+        self.waveform_button = QPushButton("Показать волну")
         self.waveform_button.setProperty("role", "tertiary")
         self.waveform_button.setEnabled(False)
-        self.waveform_button.setToolTip("Повторно рассчитать амплитудную форму сигнала")
-        self.waveform_button.clicked.connect(lambda: self.build_waveform(force=True))
+        self.waveform_button.setToolTip("Построить звуковую волну или свернуть её. Так у расшифровки остаётся больше места.")
+        self.waveform_button.clicked.connect(self._toggle_waveform)
         title_row.addWidget(self.waveform_button, 0, Qt.AlignmentFlag.AlignTop)
         player_layout.addLayout(title_row)
 
         self.waveform = WaveformWidget()
         self.waveform.seekRequested.connect(self._seek_preview)
-        player_layout.addWidget(self.waveform, 1)
+        self.waveform.setFixedHeight(48)
+        self._waveform_expanded = True
+        self.waveform.hide()
+        player_layout.addWidget(self.waveform)
 
         self.player_controls = PlayerControls()
         self.player_controls.set_enabled(False)
@@ -918,6 +926,7 @@ class QueuePage(QWidget):
         self.media_player.seekableChanged.connect(self._preview_seekable_changed)
         self.media_player.errorOccurred.connect(self._preview_error)
         self._preview_source = ""
+        self._pending_preview_seek = None
         self._player_error_sources: set[str] = set()
         self._waveform_worker = None
         self._waveform_task_id = None
@@ -928,32 +937,31 @@ class QueuePage(QWidget):
         self._waveform_cache_dir = self.data_dir / "waveform_cache"
         self._waveform_cache_dir.mkdir(parents=True, exist_ok=True)
 
-        self.audio_status = QLabel("Добавьте файл. После проверки аудиодорожки волна появится здесь.")
+        self.audio_status = SingleLineLabel("Добавьте файл или выберите его в очереди.")
         self.audio_status.setObjectName("mutedLabel")
-        self.audio_status.setWordWrap(True)
         player_layout.addWidget(self.audio_status)
 
         activity = QFrame()
         activity.setObjectName("panel")
         activity_layout = QVBoxLayout(activity)
-        activity_layout.setContentsMargins(12, 8, 12, 8)
-        activity_layout.setSpacing(6)
+        activity_layout.setContentsMargins(10, 5, 10, 5)
+        activity_layout.setSpacing(4)
         status_row = QHBoxLayout()
         self.current_label = QLabel("Распознавание не запущено")
-        self.current_label.setObjectName("cardTitle")
-        status_row.addWidget(self.current_label, 1)
+        self.current_label.setObjectName("sectionLabel")
+        status_row.addWidget(self.current_label)
         self.elapsed_label = QLabel("")
         self.elapsed_label.setObjectName("mutedLabel")
-        status_row.addWidget(self.elapsed_label)
-        activity_layout.addLayout(status_row)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(False)
-        activity_layout.addWidget(self.progress_bar)
-        self.progress_message = QLabel("Выберите файл в очереди или добавьте новые.")
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFixedHeight(18)
+        status_row.addWidget(self.progress_bar, 1)
+        status_row.addWidget(self.elapsed_label)
+        activity_layout.addLayout(status_row)
+        self.progress_message = SingleLineLabel("Выберите файл в очереди или добавьте новые.")
         self.progress_message.setObjectName("mutedLabel")
-        self.progress_message.setWordWrap(True)
         activity_layout.addWidget(self.progress_message)
 
         result_panel = QFrame()
@@ -970,37 +978,51 @@ class QueuePage(QWidget):
         self.result_actions_grid.setContentsMargins(0, 0, 0, 0)
         self.result_actions_grid.setHorizontalSpacing(7)
         self.result_actions_grid.setVerticalSpacing(6)
-        self.speaker_toggle_button = QPushButton("Скрыть спикеров" if self._show_speakers else "Показать спикеров")
+        # These controls must remain children during the first reflow. Showing a
+        # parentless QWidget before the layout reparents it creates an OS window.
+        self.speaker_toggle_button = QPushButton("Спикеры", self.result_actions_host)
+        self.speaker_toggle_button.setCheckable(True)
         self.speaker_toggle_button.setProperty("role", "tertiary")
         self.speaker_toggle_button.setToolTip("Скрывает или показывает подписи только у текущей записи. ID спикеров и цветовое разделение реплик сохраняются.")
         self.speaker_toggle_button.clicked.connect(self.toggle_speaker_display)
         self._result_action_buttons = [self.speaker_toggle_button]
-        self.timestamp_toggle_button = QPushButton("Тайм-коды: выкл.")
+        self.timestamp_toggle_button = QPushButton("Тайм-коды", self.result_actions_host)
+        self.timestamp_toggle_button.setCheckable(True)
         self.timestamp_toggle_button.setProperty("role", "tertiary")
         self.timestamp_toggle_button.setToolTip("Показывать время начала и конца каждой распознанной реплики.")
         self.timestamp_toggle_button.clicked.connect(self.toggle_timestamp_display)
         self._result_action_buttons.append(self.timestamp_toggle_button)
-        self.speaker_manage_button = QPushButton("Участники…")
+        self.speaker_manage_button = QPushButton("Участники", self.result_actions_host)
         self.speaker_manage_button.setProperty("role", "tertiary")
         self.speaker_manage_button.setToolTip("Переименовать автоматически определённых участников сразу во всех их репликах. Ручное переназначение доступно отдельно.")
         self.speaker_manage_button.clicked.connect(self.manage_speakers)
         self._result_action_buttons.append(self.speaker_manage_button)
-        self.ai_result_button = QPushButton("Обработать с ИИ")
+        self.ai_result_button = QPushButton("В ИИ", self.result_actions_host)
         self.ai_result_button.setProperty("role", "secondary")
         self.ai_result_button.setToolTip("Передать готовую расшифровку в отдельную панель локального ИИ или API")
         self.ai_result_button.clicked.connect(self.send_result_to_ai)
         self._result_action_buttons.append(self.ai_result_button)
-        self.speech_result_button = QPushButton("Озвучить диалог")
+        self.speech_result_button = QPushButton("Озвучить", self.result_actions_host)
         self.speech_result_button.setProperty("role", "secondary")
         self.speech_result_button.setToolTip("Передать расшифровку в озвучку; голоса участников можно задать во вкладке «Участники…».")
         self.speech_result_button.clicked.connect(self.send_result_to_speech)
         self._result_action_buttons.append(self.speech_result_button)
-        self.save_result_button = QPushButton("Экспорт…")
+        self.save_result_button = QPushButton("Экспорт", self.result_actions_host)
         self.save_result_button.setProperty("role", "secondary")
         self.save_result_button.clicked.connect(self.save_current_result_as)
         self._result_action_buttons.append(self.save_result_button)
+        self.result_overflow = QPushButton("Действия с расшифровкой…", self.result_actions_host)
+        self.result_overflow.setProperty("role", "secondary")
+        self.result_overflow_menu = QMenu(self.result_overflow)
+        self.result_overflow_menu.aboutToShow.connect(self._fill_result_overflow)
+        self.result_overflow.setMenu(self.result_overflow_menu)
+        self.result_overflow.hide()
+        for button in (*self._result_action_buttons, self.result_overflow):
+            button.setMinimumHeight(max(button.sizeHint().height(), button.fontMetrics().height() + 16))
         result_header.addWidget(self.result_actions_host)
         self._result_actions_columns = 0
+        self.result_actions_host.installEventFilter(self)
+        QTimer.singleShot(0, self._reflow_result_actions)
         result_layout.addLayout(result_header)
         self.result_editor = QTextEdit()
         self.result_editor.setObjectName("queueResultEditor")
@@ -1010,9 +1032,8 @@ class QueuePage(QWidget):
         self.result_editor.setReadOnly(True)
         result_layout.addWidget(self.result_editor, 1)
         speaker_info_row = QHBoxLayout()
-        self.speaker_info_label = QLabel("Участники: ещё не определены")
+        self.speaker_info_label = SingleLineLabel("Участники: ещё не определены")
         self.speaker_info_label.setObjectName("mutedLabel")
-        self.speaker_info_label.setWordWrap(True)
         speaker_info_row.addWidget(self.speaker_info_label, 1)
         self.speaker_count_spin = QSpinBox()
         self.speaker_count_spin.setObjectName("speakerCountSpin")
@@ -1020,13 +1041,11 @@ class QueuePage(QWidget):
         self.speaker_count_spin.setSpecialValueText("Авто")
         self.speaker_count_spin.setPrefix("Спикеров: ")
         self.speaker_count_spin.setToolTip(
-            "Укажите точное количество участников, если оно известно. Например, 2 заставит модель "
-            "искать ровно два голоса. «Авто» оставляет число участников на усмотрение модели."
+            "По умолчанию — ровно 2. Выберите 1 для монолога, другое число для группы, "
+            "или «Авто», чтобы дать модели выбрать 1 или 2."
         )
-        saved_speaker_settings = load_settings(self.project_root)
-        saved_min = int(saved_speaker_settings.get("speaker_min", 0) or 0)
-        saved_max = int(saved_speaker_settings.get("speaker_max", 0) or 0)
-        self.speaker_count_spin.setValue(saved_min if saved_min > 0 and saved_min == saved_max else 0)
+        self.speaker_count_spin.setValue(2)
+        self.speaker_count_spin.valueChanged.connect(self._save_speaker_choice)
         speaker_info_row.addWidget(self.speaker_count_spin, 0, Qt.AlignmentFlag.AlignTop)
         self.speaker_auto_button = QPushButton("Авто-спикеры")
         self.speaker_auto_button.setProperty("role", "tertiary")
@@ -1058,14 +1077,15 @@ class QueuePage(QWidget):
         self.work_splitter.addWidget(result_panel)
         self.work_splitter.setStretchFactor(0, 0)
         self.work_splitter.setStretchFactor(1, 1)
-        self.work_splitter.setSizes([120, 210])
-        player_layout.addWidget(self.work_splitter, 2)
+        activity.setMaximumHeight(activity.sizeHint().height())
+        self.work_splitter.setSizes([activity.sizeHint().height(), 520])
+        player_layout.addWidget(self.work_splitter, 1)
 
         self.media_splitter.addWidget(self.player_panel)
         self.media_splitter.setHandleWidth(8)
         self.media_splitter.setStretchFactor(0, 3)
         self.media_splitter.setStretchFactor(1, 7)
-        self.media_splitter.setSizes([320, 680])
+        self.media_splitter.setSizes([300, 880])
         root.addWidget(self.media_splitter, 1)
 
         # Compatibility aliases from previous audio preview layout.
@@ -1078,19 +1098,40 @@ class QueuePage(QWidget):
         self._clock.start()
         self._load_queue()
 
+    def eventFilter(self, watched, event):
+        from PySide6.QtCore import QEvent
+        if watched is getattr(self, "result_actions_host", None) and event.type() == QEvent.Type.Resize:
+            QTimer.singleShot(0, self._reflow_result_actions)
+        return super().eventFilter(watched, event)
+
+    def _fill_result_overflow(self):
+        self.result_overflow_menu.clear()
+        for button in self._result_action_buttons:
+            item = self.result_overflow_menu.addAction(button.text())
+            item.setEnabled(button.isEnabled())
+            item.triggered.connect(button.click)
+
     def _reflow_result_actions(self):
-        """Wrap result controls into stable rows as the queue window narrows."""
-        page_width = self.width()
-        columns = 6 if page_width >= 1500 else (3 if page_width >= 900 else 2)
+        """Keep the six actions in one row; use one menu only at narrow widths."""
+        width = self.result_actions_host.width()
+        needed = sum(button.sizeHint().width() for button in self._result_action_buttons) + 35
+        columns = len(self._result_action_buttons) if width >= needed else -1
         if columns == self._result_actions_columns:
             return
+        self.result_overflow.hide()
+        for button in self._result_action_buttons:
+            button.hide()
         while self.result_actions_grid.count():
             self.result_actions_grid.takeAt(0)
-        for index, button in enumerate(self._result_action_buttons):
-            row, column = divmod(index, columns)
-            self.result_actions_grid.addWidget(button, row, column)
-        for column in range(columns):
-            self.result_actions_grid.setColumnStretch(column, 1)
+        for column in range(len(self._result_action_buttons)):
+            self.result_actions_grid.setColumnStretch(column, int(column < max(1, columns)))
+        if columns == -1:
+            self.result_actions_grid.addWidget(self.result_overflow, 0, 0)
+            self.result_overflow.show()
+        else:
+            for index, button in enumerate(self._result_action_buttons):
+                self.result_actions_grid.addWidget(button, 0, index)
+                button.show()
         self._result_actions_columns = columns
 
     def resizeEvent(self, event):
@@ -1104,8 +1145,8 @@ class QueuePage(QWidget):
             if self.queue_store.has_records():
                 self.tasks = self.queue_store.load_tasks()
                 loaded_from_db = True
-            else:
-                payload = json.loads(self.queue_file.read_text(encoding="utf-8"))
+            elif self.queue_file.is_file():
+                payload = json.loads(read_document(self.queue_file))
                 if isinstance(payload, dict) and isinstance(payload.get("tasks"), list):
                     self.tasks = [task for task in payload["tasks"] if isinstance(task, dict) and task.get("path")]
                     changed = True  # one-time migration from legacy queue.json
@@ -1121,7 +1162,7 @@ class QueuePage(QWidget):
         except (OSError, RuntimeError):
             logging.getLogger("app").exception("Could not load SQLite queue; trying legacy JSON backup.")
             try:
-                payload = json.loads(self.queue_file.read_text(encoding="utf-8"))
+                payload = json.loads(read_document(self.queue_file))
                 self.tasks = [task for task in payload.get("tasks", []) if isinstance(task, dict) and task.get("path")]
                 changed = True
             except Exception:
@@ -1183,8 +1224,6 @@ class QueuePage(QWidget):
             if task.get("waveform_status") in {"loading", "ready"}:
                 task["waveform_status"] = "queued"
                 changed = True
-            if task.get("waveform_status") == "queued" and task.get("id") not in self._waveform_pending_ids:
-                self._waveform_pending_ids.append(task.get("id"))
             if task.get("status") == "processing":
                 valid_checkpoint = bool(task.get("partial_text")) and float(task.get("resume_seconds", 0) or 0) > 0
                 task["status"] = "paused" if valid_checkpoint else "queued"
@@ -1207,8 +1246,6 @@ class QueuePage(QWidget):
             self._write_queue_snapshot()
             self._write_legacy_queue_backup(force=True)
         self._render_table()
-        if self._waveform_pending_ids:
-            QTimer.singleShot(0, self._start_next_waveform_extraction)
 
     def _save_queue(self):
         """Debounce queue updates; SQLite writes only changed task rows."""
@@ -1231,7 +1268,7 @@ class QueuePage(QWidget):
         if not force and now - self._last_queue_json_backup < 30.0:
             return
         try:
-            atomic_write_json(self.queue_file, {"version": 2, "updated_at": _now(), "tasks": self.tasks})
+            write_document_json(self.queue_file, {"version": 2, "updated_at": _now(), "tasks": self.tasks})
             self._last_queue_json_backup = now
         except OSError:
             logging.getLogger("app").exception("Could not write legacy queue backup: %s", self.queue_file)
@@ -1298,8 +1335,6 @@ class QueuePage(QWidget):
                 status = "Приостановлено"
             elif wave_status == "loading":
                 status = "Проверка аудио…"
-            elif wave_status == "queued":
-                status = "Подготавливается…"
             elif wave_status == "failed":
                 status = "Нет аудио / ошибка"
             else:
@@ -1368,13 +1403,10 @@ class QueuePage(QWidget):
                 self.tasks.append(task)
                 existing_paths.add(path_key)
                 added_ids.append(task["id"])
-                self._waveform_pending_ids.append(task["id"])
             except (OSError, ValueError) as exc:
                 skipped.append(f"{Path(raw).name}: {exc}")
         self._save_queue()
         self._render_table(added_ids[0] if added_ids else None)
-        if added_ids:
-            QTimer.singleShot(0, self._start_next_waveform_extraction)
         if skipped:
             self.progress_message.setText("Не добавлены: " + "; ".join(skipped[:4]))
         elif duplicates and not added_ids:
@@ -1382,7 +1414,9 @@ class QueuePage(QWidget):
         elif added_ids:
             suffix = f" Пропущено повторов: {len(duplicates)}." if duplicates else ""
             self.progress_message.setText(
-                f"Добавлено файлов: {len(added_ids)}. Проверяем аудиодорожки и длительность.{suffix}"
+                f"Добавлено файлов: {len(added_ids)}. "
+                + ("Они обработаются в текущей очереди." if self.queue_running else "Выберите модели и запустите очередь.")
+                + suffix
             )
         return len(added_ids)
 
@@ -1453,65 +1487,107 @@ class QueuePage(QWidget):
         self._render_table()
 
 
-    def start_queue(self):
-        if self.active_worker is not None:
+    def start_queue(self, *, resume_paused=True):
+        if self.active_worker is not None or self.shutdown_requested:
             return
-        if not any(task.get("status") in {"queued", "paused"} for task in self.tasks):
+        statuses = {"queued", "paused"} if resume_paused else {"queued"}
+        if not any(task.get("status") in statuses and not task.get("source_changed") for task in self.tasks):
             self.progress_message.setText("Нет файлов, ожидающих обработки или продолжения.")
             return
         self.queue_running = True
+        self._runnable_statuses = statuses
         self.cancel_requested = False
         self.stop_requested = False
         self.discard_requested = False
         self._start_next()
 
+    def _save_fixed_model(self, checked):
+        try:
+            save_settings(self.project_root, {"queue_model_fixed": bool(checked)})
+        except OSError as exc:
+            self.progress_message.setText(f"Не удалось сохранить настройку модели: {exc}")
+        self._sync_task_model(self._selected_task())
+
     def _populate_file_model_choices(self):
         settings = load_settings(self.project_root)
-        self.file_model_combo.clear()
-        self.file_model_combo.addItem("Авто — модель из настроек", "auto")
+        options = [("Авто — из настроек", "auto")]
         from transcription.faster_whisper_backend import resolve_faster_model
-        for size in ("small", "medium"):
-            try:
-                found = resolve_faster_model(self.project_root, size, "")
-            except Exception:
-                found = None
-            if found:
-                description = "быстрее · меньше памяти" if size == "small" else "точнее · больше памяти"
-                self.file_model_combo.addItem(
-                    f"faster-whisper · {size.title()} ({description})", f"faster:{size}"
-                )
+        for size, label in (("small", "Small — быстрая"), ("medium", "Medium — точнее"),
+                            ("large-v3", "Large-v3 — сложные записи"), ("large-v3-turbo", "Large-v3 Turbo")):
+            if resolve_faster_model(self.project_root, size, ""):
+                options.append((label, f"faster:{size}"))
         selected = str(settings.get("queue_model_choice", "auto") or "auto")
-        index = self.file_model_combo.findData(selected)
-        self.file_model_combo.setCurrentIndex(index if index >= 0 else 0)
+        for combo in (self.file_model_combo, self.task_model_combo):
+            combo.blockSignals(True)
+            combo.clear()
+            if combo is self.task_model_combo:
+                combo.addItem("Модель по умолчанию", "default")
+            for label, value in options:
+                combo.addItem(label, value)
+            combo.blockSignals(False)
+        self.file_model_combo.blockSignals(True)
+        self._select_model(self.file_model_combo, selected)
+        self.file_model_combo.blockSignals(False)
+        if hasattr(self, "table"):
+            self._sync_task_model(self._selected_task())
+
+    @staticmethod
+    def _select_model(combo, value):
+        index = combo.findData(value)
+        if index < 0:
+            combo.addItem(f"{value.removeprefix('faster:')} — не установлена", value)
+            index = combo.count() - 1
+        combo.setCurrentIndex(index)
 
     def _save_file_model_choice(self, *_):
-        if not hasattr(self, "file_model_combo") or self.file_model_combo.currentIndex() < 0:
-            return
-        save_settings(self.project_root, {"queue_model_choice": self.file_model_combo.currentData()})
+        if self.file_model_combo.currentIndex() >= 0:
+            try:
+                save_settings(self.project_root, {"queue_model_choice": self.file_model_combo.currentData()})
+            except OSError as exc:
+                self.progress_message.setText(f"Не удалось сохранить настройку модели: {exc}")
+        self._sync_task_model(self._selected_task())
 
-    def _apply_file_model_choice(self):
-        choice = str(self.file_model_combo.currentData() or "auto")
-        if choice == "auto":
+    @staticmethod
+    def _checkpoint_model(task):
+        return task.get("run_model_choice") if task.get("resume_seconds") and task.get("partial_text") else None
+
+    def _sync_task_model(self, task):
+        task = task or {}
+        choice = str(task.get("model_choice") or "default")
+        fixed = self.fixed_model_checkbox.isChecked()
+        default = str(self.file_model_combo.currentData() or "auto")
+        run_choice = self._checkpoint_model(task)
+        if task.get("status") in {"processing", "completed"}:
+            run_choice = task.get("run_model_choice") or run_choice
+        self.task_model_combo.blockSignals(True)
+        self._select_model(self.task_model_combo, str(run_choice or (default if fixed and task else choice)))
+        self.task_model_combo.blockSignals(False)
+        editable = task.get("status") in {"queued", "paused", "cancelled", "failed"}
+        self.task_model_combo.setEnabled(bool(editable and not fixed and not run_choice))
+        self.task_model_combo.setToolTip(
+            "При продолжении с сохранённого места используется та же модель."
+            if run_choice and editable else
+            "Используется общая модель. Отключите общий режим, чтобы выбрать модель для этого файла."
+            if fixed else "Выберите модель для этого файла перед запуском."
+        )
+
+    def _save_task_model_choice(self, *_):
+        task = self._selected_task()
+        if not task or not self.task_model_combo.isEnabled():
             return
-        settings = load_settings(self.project_root)
-        if choice.startswith("faster:"):
-            settings.update({
-                "transcription_engine": "faster-whisper",
-                "faster_whisper_model": choice.split(":", 1)[1],
-                "faster_whisper_model_path": "",
-            })
-        elif choice.startswith("whisper:"):
-            model_path = Path(choice.split(":", 1)[1]).resolve()
-            settings["transcription_engine"] = "whispercpp"
-            model_config = get_user_data_root(self.project_root) / "data" / "model_paths" / "whisper_model.txt"
-            model_config.parent.mkdir(parents=True, exist_ok=True)
-            model_config.write_text(str(model_path), encoding="utf-8")
-        save_settings(self.project_root, settings)
+        task["model_choice"] = str(self.task_model_combo.currentData() or "default")
+        self._save_queue()
+
+    def _model_for_task(self, task):
+        default = str(self.file_model_combo.currentData() or "auto")
+        choice = str(task.get("model_choice") or "default")
+        return default if self.fixed_model_checkbox.isChecked() or choice == "default" else choice
 
     def _start_next(self):
         if not self.queue_running or self.active_worker is not None:
             return
-        task = next((item for item in self.tasks if item.get("status") in {"paused", "queued"} and not item.get("source_changed")), None)
+        task = next((item for item in self.tasks
+                     if item.get("status") in self._runnable_statuses and not item.get("source_changed")), None)
         if task is None:
             self.queue_running = False
             self._render_table()
@@ -1542,10 +1618,11 @@ class QueuePage(QWidget):
         task["started_at"] = _now()
         task["started_epoch"] = time.time()
         task["error"] = ""
+        task["run_model_choice"] = (self._checkpoint_model(task) if was_resuming else None) or self._model_for_task(task)
         self.active_task_id = task["id"]
         self._save_queue()
         self._render_table(task["id"])
-        self.current_label.setText(Path(task["path"]).name)
+        self.current_label.setText("ХОД РАСПОЗНАВАНИЯ")
         self.elapsed_label.setText("Прошло 00:00")
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(int(task.get("progress", 0) or 0))
@@ -1558,18 +1635,25 @@ class QueuePage(QWidget):
             else "Подготовка аудио и загрузка модели…"
         )
         try:
-            self._apply_file_model_choice()
-        except OSError as exc:
-            self.progress_message.setText(f"Не удалось сохранить выбор модели: {exc}")
+            prefix_segments = list(task.get("segments", [])) if was_resuming else []
+            self.active_worker = self.worker_factory(
+                task["path"], resume_from_seconds=resume_from_seconds, prefix_text=saved_prefix,
+                prefix_segments=prefix_segments
+            )
+        except Exception as exc:
+            logging.getLogger("processing").exception("Could not start queued task")
+            self.progress_message.setText(f"Не удалось начать обработку файла: {exc}")
             task["status"] = "failed"
             task["error"] = str(exc)
+            task["finished_at"] = _now()
+            self.active_task_id = None
+            self.active_worker = None
             self._save_queue()
+            self._render_table()
+            QTimer.singleShot(0, self._start_next)
             return
-        prefix_segments = list(task.get("segments", [])) if was_resuming else []
-        self.active_worker = self.worker_factory(
-            task["path"], resume_from_seconds=resume_from_seconds, prefix_text=saved_prefix,
-            prefix_segments=prefix_segments
-        )
+        self.active_worker.speaker_count = self._task_speaker_count(task)
+        self.active_worker.model_choice = task["run_model_choice"]
         self.active_worker.progress_changed.connect(self._on_progress)
         if hasattr(self.active_worker, "segments_changed"):
             self.active_worker.segments_changed.connect(self._on_segments_changed)
@@ -1697,9 +1781,7 @@ class QueuePage(QWidget):
         if not task:
             return
         task["show_timestamps"] = not bool(task.get("show_timestamps", False))
-        self.timestamp_toggle_button.setText(
-            "Тайм-коды: вкл." if task["show_timestamps"] else "Тайм-коды: выкл."
-        )
+        self.timestamp_toggle_button.setChecked(task["show_timestamps"])
         self._loading_editor = True
         self._set_task_editor_text(task, preserve_scroll=True)
         self._loading_editor = False
@@ -1719,15 +1801,13 @@ class QueuePage(QWidget):
             and self.active_worker is None and self._speaker_worker is None
         ))
         self.speaker_auto_button.setText("Авто-спикеры" if not self._speaker_worker else "Диаризация…")
-        self.speaker_toggle_button.setText("Скрыть спикеров" if self._task_show_speakers(task) else "Показать спикеров")
-        self.timestamp_toggle_button.setText(
-            "Тайм-коды: вкл." if task and task.get("show_timestamps", False) else "Тайм-коды: выкл."
-        )
+        self.speaker_toggle_button.setChecked(self._task_show_speakers(task))
+        self.timestamp_toggle_button.setChecked(bool(task and task.get("show_timestamps", False)))
         self.timestamp_toggle_button.setEnabled(bool(task and task.get("segments")))
         if not has_speakers:
             note = str(task.get("speaker_note", "") if task else "")
             if has_segments and task and task.get("status") == "completed":
-                note = note or "Автоматические участники не назначены. Можно добавить их вручную через «Участники…»."
+                note = note or "Автоматические участники не назначены. Можно добавить их вручную через «Участники»."
             elif task and task.get("status") == "processing":
                 note = "Текст появляется по мере распознавания. Автоматическое разделение на спикеров выполняется после распознавания и использует локальные модели голосов."
             else:
@@ -1757,11 +1837,6 @@ class QueuePage(QWidget):
         self._loading_editor = True
         self._set_task_editor_text(task)
         self._loading_editor = False
-        self.speaker_toggle_button.setText("Скрыть спикеров" if self._task_show_speakers(task) else "Показать спикеров")
-        self.timestamp_toggle_button.setText(
-            "Тайм-коды: вкл." if task and task.get("show_timestamps", False) else "Тайм-коды: выкл."
-        )
-        self.timestamp_toggle_button.setEnabled(bool(task and task.get("segments")))
         self._refresh_speaker_controls(task)
 
     def run_speaker_diarization(self):
@@ -1808,9 +1883,8 @@ class QueuePage(QWidget):
         self.speaker_info_label.setText("Автоматически определяем участников по аудио. ИИ-анализ не запускается…")
         speaker_count = self.speaker_count_spin.value()
         settings = load_settings(self.project_root)
-        settings["speaker_min"] = speaker_count
-        settings["speaker_max"] = speaker_count
-        save_settings(self.project_root, settings)
+        task["speaker_count"] = speaker_count
+        self._save_queue()
         if speaker_count:
             self.speaker_info_label.setText(
                 f"Разделяем запись ровно на {speaker_count} спикера. ИИ-анализ не запускается…"
@@ -1860,7 +1934,7 @@ class QueuePage(QWidget):
             result_path = Path(task.get("result_path", "")) if task.get("result_path") else None
             if result_path:
                 try:
-                    result_path.write_text(task["partial_text"], encoding="utf-8", newline="")
+                    write_document(result_path, task["partial_text"])
                 except OSError:
                     logging.getLogger("processing.diarization").exception("Could not update result file after diarization")
         self._save_queue()
@@ -2138,7 +2212,7 @@ class QueuePage(QWidget):
                 show_timestamps=bool(task.get("show_timestamps", False)),
             )
             if task.get("result_path"):
-                Path(task["result_path"]).write_text(task["partial_text"], encoding="utf-8", newline="")
+                write_document(Path(task["result_path"]), task["partial_text"])
         self._save_queue()
         if task.get("id") == self._displayed_task_id and not task.get("edited"):
             self._loading_editor = True
@@ -2172,7 +2246,7 @@ class QueuePage(QWidget):
         try:
             if result_path:
                 result_path.parent.mkdir(parents=True, exist_ok=True)
-                result_path.write_text(text, encoding="utf-8", newline="")
+                write_document(result_path, text)
             self._save_queue()
             self.progress_message.setText("Изменения текста автоматически сохранены.")
         except OSError as exc:
@@ -2230,9 +2304,14 @@ class QueuePage(QWidget):
             show_timestamps=bool(task.get("show_timestamps", False)),
         ) or text
         result_path = self.results_dir / f"{task['id']}.txt"
-        temporary = result_path.with_suffix(".txt.tmp")
-        temporary.write_text(display_text, encoding="utf-8", newline="")
-        os.replace(temporary, result_path)
+        try:
+            write_document(result_path, display_text)
+        except OSError as exc:
+            task.update(status="failed", partial_text=display_text,
+                        error=f"Не удалось сохранить результат: {exc}", finished_at=_now())
+            self.progress_message.setText(task["error"])
+            self._save_queue()
+            return
         task["status"] = "completed"
         task["progress"] = 100
         task["partial_text"] = display_text
@@ -2331,7 +2410,8 @@ class QueuePage(QWidget):
         self.stop_requested = False
         self.discard_requested = False
         self._render_table()
-        if self.queue_running and any(task.get("status") in {"queued", "paused"} for task in self.tasks):
+        if self.queue_running and any(task.get("status") in self._runnable_statuses and not task.get("source_changed")
+                                      for task in self.tasks):
             QTimer.singleShot(0, self._start_next)
             return
         self.queue_running = False
@@ -2471,10 +2551,25 @@ class QueuePage(QWidget):
         self.result_editor.clear()
         self._displayed_task_id = None
 
+    @staticmethod
+    def _task_speaker_count(task):
+        try:
+            count = max(0, min(20, int(task.get("speaker_count", 2))))
+        except (TypeError, ValueError):
+            return 2
+        return count if count or task.get("speaker_count_explicit") else 2
+
+    def _save_speaker_choice(self, value):
+        task = self._selected_task()
+        if task is not None:
+            task["speaker_count"], task["speaker_count_explicit"] = int(value), True
+            self._save_queue()
+
     def _selection_changed(self):
         # The settings tab may have changed speaker visibility while this page was hidden.
         self._show_speakers = bool(load_settings(self.project_root).get("show_speakers", True))
         task = self._selected_task()
+        self._sync_task_model(task)
         if task is None:
             self._set_audio_source("")
             self.player_title.setText("Выберите файл")
@@ -2494,13 +2589,16 @@ class QueuePage(QWidget):
                 self._editor_save_timer.stop()
                 self._persist_result_editor()
             self._displayed_task_id = task.get("id")
+            self.speaker_count_spin.blockSignals(True)
+            self.speaker_count_spin.setValue(self._task_speaker_count(task))
+            self.speaker_count_spin.blockSignals(False)
             self._set_audio_source(task.get("path", ""))
             self._loading_editor = True
             result_path = Path(task.get("result_path", "")) if task.get("result_path") else None
             if task.get("segments") and not task.get("edited"):
                 self._set_task_editor_text(task)
             elif task.get("status") == "completed" and result_path and result_path.is_file():
-                self.result_editor.setPlainText(result_path.read_text(encoding="utf-8"))
+                self.result_editor.setPlainText(read_document(result_path))
             else:
                 self.result_editor.setPlainText(task.get("partial_text", ""))
             self.result_editor.setReadOnly(task.get("status") in {"queued", "processing"})
@@ -2510,7 +2608,7 @@ class QueuePage(QWidget):
         path = Path(task.get("path", ""))
         self.player_title.setText(path.name or "Выберите файл")
         duration_ms = int(task.get("duration_ms", 0) or 0)
-        duration_text = _format_duration(duration_ms / 1000) if duration_ms else "Определяется…"
+        duration_text = _format_duration(duration_ms / 1000) if duration_ms else "Время неизвестно"
         self.player_metadata.setText(
             f"{duration_text}   ·   {_format_size(int(task.get('file_size', 0) or 0))}   ·   "
             f"{task.get('format') or path.suffix.upper().lstrip('.') or '—'}"
@@ -2521,10 +2619,8 @@ class QueuePage(QWidget):
         if samples and task.get("waveform_status") == "ready":
             self.waveform.set_samples(samples, duration_ms)
             self.waveform.set_loading(False)
-        elif task.get("waveform_status") in {"queued", "loading"}:
+        elif task.get("waveform_status") == "loading":
             self.waveform.set_loading(True)
-            if task.get("waveform_status") == "queued":
-                self._queue_waveform_task(task.get("id"), priority=True)
         elif task.get("waveform_status") == "failed":
             self.waveform.clear()
             self.waveform.set_loading(False)
@@ -2532,12 +2628,14 @@ class QueuePage(QWidget):
         is_active_task = task.get("id") == self.active_task_id and self.active_worker is not None
         no_active_task = self.active_worker is None
         if is_active_task or no_active_task:
-            self.current_label.setText(path.name or "Распознавание не запущено")
+            self.current_label.setText("ХОД РАСПОЗНАВАНИЯ")
         if is_active_task or no_active_task:
             if task.get("status") == "failed":
                 self.progress_message.setText(task.get("error") or "Обработка завершилась с ошибкой.")
             elif task.get("status") == "queued" and task.get("error"):
                 self.progress_message.setText(task.get("error"))
+            elif is_new_selection and no_active_task:
+                self.progress_message.setText(STATUS_LABELS.get(task.get("status"), "Готово к обработке."))
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(int(task.get("progress", 0) or 0))
             if no_active_task:
@@ -2574,41 +2672,42 @@ class QueuePage(QWidget):
                 self._sync_player_enabled(task)
             return
 
-        self.media_player.stop()
+        if not self.media_player.source().isEmpty():
+            self.audio_engine.load("")
         self._preview_source = path
+        self._pending_preview_seek = None
         self._player_error_sources.discard(path)
         self.waveform.clear()
+        self.waveform.hide()
+        self.waveform_button.setText("Показать волну")
         self.seek_slider.setRange(0, 0)
         self.audio_time_label.setText("00:00 / 00:00")
         self.player_controls.set_playing(False)
         task = self._task_for_source(path)
         if path and Path(path).is_file():
-            self.audio_engine.load(path)
-            self.audio_engine.set_rate(float(self.speed_combo.currentData() or 1.0))
+            self.waveform.setVisible(self._waveform_expanded)
+            self.waveform_button.setText("Свернуть волну" if self._waveform_expanded else "Показать волну")
             if task:
                 duration_ms = int(task.get("duration_ms", 0) or 0)
                 samples = self._waveform_samples_by_path.get(path)
                 if samples:
                     self.waveform.set_samples(samples, duration_ms)
-                elif task.get("waveform_status") in {"queued", "loading"}:
-                    self.waveform.set_loading(True)
                 self.player_metadata.setText(
-                    f"{_format_duration(duration_ms / 1000) if duration_ms else 'Определяется…'}   ·   "
+                    f"{_format_duration(duration_ms / 1000) if duration_ms else 'Время неизвестно'}   ·   "
                     f"{_format_size(int(task.get('file_size', 0) or 0))}   ·   {task.get('format', '—')}"
                 )
                 if task.get("waveform_status") == "failed":
                     self.audio_status.setText(
                         task.get("waveform_error") or "Не удалось найти или прочитать аудиодорожку."
                     )
-                elif task.get("waveform_status") in {"queued", "loading"}:
-                    self.audio_status.setText("Подготавливаем аудиодорожку…")
                 else:
-                    self.audio_status.setText("Аудиодорожка готова. Можно прослушать файл и перейти по волне.")
+                    self.audio_status.setText("Нажмите «Слушать», чтобы воспроизвести запись.")
+                    if self._waveform_expanded and not samples:
+                        self.build_waveform()
                 self._sync_player_enabled(task)
             else:
                 self.player_controls.set_enabled(False)
                 self.audio_status.setText("Загружаем сведения об аудиодорожке…")
-            # QMediaPlayer and FFmpeg are independent: let both inspect the selected source.
         else:
             self.audio_engine.load("")
             self.player_controls.set_enabled(False)
@@ -2619,7 +2718,7 @@ class QueuePage(QWidget):
                 self.audio_status.setText("Выберите файл из очереди.")
             self.player_metadata.setText("Длительность · Размер · Формат")
         if path and Path(path).is_file():
-            self.waveform_button.setEnabled(bool(task and task.get("waveform_status") != "loading"))
+            self.waveform_button.setEnabled(bool(task))
 
     def _task_for_source(self, path: str):
         if not path:
@@ -2630,7 +2729,7 @@ class QueuePage(QWidget):
 
     def _sync_player_enabled(self, task):
         ready = bool(
-            task and task.get("audio_stream_available") is True
+            task and self._preview_source and Path(self._preview_source).is_file()
             and self._preview_source not in self._player_error_sources
         )
         self.player_controls.set_enabled(ready)
@@ -2640,17 +2739,22 @@ class QueuePage(QWidget):
             self.player_controls.seek_slider,
         ):
             widget.setEnabled(seekable)
-        self.waveform_button.setEnabled(bool(task and Path(task.get("path", "")).is_file()
-                                             and task.get("waveform_status") != "loading"))
+        self.waveform_button.setEnabled(bool(task and Path(task.get("path", "")).is_file()))
         if not ready:
             self.player_controls.set_playing(False)
 
     def toggle_preview(self):
         task = self._task_for_source(self._preview_source)
-        if not task or task.get("audio_stream_available") is not True:
-            self.audio_status.setText("Сначала дождитесь проверки аудиодорожки.")
+        if not task or not Path(self._preview_source).is_file():
+            self.audio_status.setText("Выберите доступный аудио- или видеофайл.")
             return
+        self._load_preview_if_needed()
         self.audio_engine.play_pause()
+
+    def _load_preview_if_needed(self):
+        if self.media_player.source().isEmpty():
+            self.audio_engine.load(self._preview_source)
+            self.audio_engine.set_rate(float(self.speed_combo.currentData() or 1.0))
 
     def stop_preview(self):
         self.audio_engine.stop()
@@ -2665,6 +2769,11 @@ class QueuePage(QWidget):
 
     def _seek_preview(self, position_ms: int):
         if not self.media_player.isSeekable():
+            if (self.media_player.source().isEmpty() and self._preview_source
+                    and Path(self._preview_source).is_file()):
+                self._pending_preview_seek = position_ms
+                self._load_preview_if_needed()
+                return
             self.audio_status.setText("Для этого файла перемотка пока недоступна: медиадвижок ещё не открыл временную шкалу.")
             return
         task = self._task_for_source(self._preview_source)
@@ -2756,10 +2865,13 @@ class QueuePage(QWidget):
 
     def _preview_seekable_changed(self, seekable):
         task = self._task_for_source(self._preview_source)
-        ready = bool(task and task.get("audio_stream_available") is True)
+        ready = bool(task and self._preview_source not in self._player_error_sources)
         for button in (self.player_controls.back10_button, self.player_controls.forward10_button):
             button.setEnabled(bool(seekable and ready))
         self.seek_slider.setEnabled(bool(seekable and ready))
+        if ready and seekable and self._pending_preview_seek is not None:
+            position, self._pending_preview_seek = self._pending_preview_seek, None
+            self._seek_preview(position)
 
     def _preview_error(self, error, message):
         if self._preview_source:
@@ -2770,6 +2882,17 @@ class QueuePage(QWidget):
             )
         self.player_controls.set_enabled(False)
         self.player_controls.set_playing(False)
+
+    def _toggle_waveform(self):
+        self._waveform_expanded = not self._waveform_expanded
+        if not self._waveform_expanded:
+            self.waveform.hide()
+            self.waveform_button.setText("Показать волну")
+        else:
+            self.waveform.show()
+            self.waveform_button.setText("Свернуть волну")
+            if self._preview_source not in self._waveform_samples_by_path:
+                self.build_waveform()
 
     def build_waveform(self, force=False):
         task = self._task_for_source(self._preview_source)
@@ -2823,7 +2946,7 @@ class QueuePage(QWidget):
                 )
             else:
                 self.audio_status.setText(
-                    "Аудиодорожка готова. Нажмите «Воспроизвести» или выберите позицию на волне."
+                    "Аудиодорожка готова. Нажмите «Слушать» или выберите позицию на волне."
                 )
             self._sync_player_enabled(task)
             self._update_audio_time(self.media_player.position(), max(duration_ms, self.media_player.duration()))
@@ -2841,7 +2964,7 @@ class QueuePage(QWidget):
         if str(Path(source_path).resolve()) == self._preview_source:
             self.waveform.clear()
             self.waveform.set_loading(False)
-            self.player_controls.set_enabled(False)
+            self._sync_player_enabled(task)
             self.waveform_button.setEnabled(True)
             lowered = error_text.lower()
             if any(term in lowered for term in ("аудиодорожка", "не найдено аудиоданных", "matches no streams", "does not contain any stream")):
@@ -2881,23 +3004,24 @@ class QueuePage(QWidget):
     def send_result_to_ai(self):
         task = self._selected_task()
         text = self.result_editor.toPlainText().strip()
-        # AI analysis should retain speaker attribution even when speaker labels are
-        # hidden in the editor. A manually edited transcript remains authoritative.
-        speaker_context = []
-        if task and not task.get("edited") and task.get("segments"):
-            from meeting_intelligence import build_timestamped_transcript
-            text, speaker_context = build_timestamped_transcript(
-                task.get("segments", []), task.get("speaker_names", {})
-            )
-            if not text.strip():
-                text = render_transcript_segments(
-                    task.get("segments", []), show_speakers=True,
-                    speaker_names=task.get("speaker_names", {}), show_timestamps=True,
-                ).strip()
         if not task or not text:
             QMessageBox.information(self, "Нет расшифровки", "Выберите задачу и убедитесь, что её результат не пуст.")
             return
-        self.ai_requested.emit(text, str(task.get("path", "")), speaker_context)
+        if self._editor_save_timer.isActive():
+            self._editor_save_timer.stop()
+            self._persist_result_editor()
+        from ai_transfer import ask_transfer_options, available_annotations, transfer_payload
+        segments = task.get("segments") or []
+        names = task.get("speaker_names") or {}
+        edited = bool(task.get("edited"))
+        has_time, has_speakers = available_annotations(text, segments, names, edited=edited)
+        options = ask_transfer_options(self, has_timestamps=has_time, has_speakers=has_speakers)
+        if options is None:
+            return
+        text, context = transfer_payload(text, segments, names, edited=edited,
+                                         timestamps=options[0], speakers=options[1])
+        if text.strip():
+            self.ai_requested.emit(text, str(task.get("path", "")), context)
 
     def send_result_to_speech(self):
         task = self._selected_task()
@@ -2951,7 +3075,10 @@ class QueuePage(QWidget):
             return
         default_name = (Path(task["path"]).stem or "Spiker_result") + ".txt"
         filters = "Текстовый файл (*.txt);;Markdown (*.md);;Субтитры SubRip (*.srt);;WebVTT (*.vtt);;JSON с сегментами (*.json);;Документ Word (*.docx)"
-        target, selected_filter = QFileDialog.getSaveFileName(self, "Экспорт результата", default_name, filters)
+        from app_paths import documents_folder
+        export_dir = documents_folder() / "Spiker" / "Экспорт"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        target, selected_filter = QFileDialog.getSaveFileName(self, "Экспорт без шифрования", str(export_dir / default_name), filters)
         if not target:
             return
         extensions = {
@@ -2960,6 +3087,9 @@ class QueuePage(QWidget):
         }
         desired_extension = next((ext for label, ext in extensions.items() if label in selected_filter), ".txt")
         path = Path(target)
+        if path.resolve().is_relative_to(self.results_dir.resolve()):
+            QMessageBox.warning(self, "Выберите другую папку", "Папка внутренней истории защищена. Выберите «Экспорт» или любую другую папку.")
+            return
         if path.suffix.lower() not in set(extensions.values()):
             path = path.with_suffix(desired_extension)
         elif desired_extension != ".txt" and path.suffix.lower() != desired_extension:
@@ -2997,7 +3127,7 @@ class QueuePage(QWidget):
             # The canonical TXT result and queue copy always track edits, independent of export format.
             task["partial_text"] = text
             if task.get("result_path"):
-                Path(task["result_path"]).write_text(text, encoding="utf-8", newline="")
+                write_document(Path(task["result_path"]), text)
             self._save_queue()
             self.progress_message.setText(f"Результат сохранён: {path}")
         except Exception as exc:
